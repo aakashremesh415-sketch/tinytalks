@@ -3,51 +3,147 @@
 An anonymous, end-to-end encrypted chat platform: guest or verified
 accounts, gender-filtered matching, self-destructing image sharing gated
 behind ID-free age verification, and a real moderation/ticketing system
-for the admin side.
+for the admin side. Built to deploy on **Vercel**, with **Neon** (Postgres),
+**Pusher Channels** (realtime), and **Vercel Blob** (file storage).
 
-This is a working MVP scaffold, not a polished production deploy. Read
+This is a working MVP, not a polished production deploy. Read
 [SAFETY_AND_LIMITATIONS.md](./SAFETY_AND_LIMITATIONS.md) before launching
 this anywhere real users can reach it.
 
 ## What's here
 
 ```
-server/   Express + Socket.io + Prisma API
-client/   React + Vite + Tailwind frontend
-brand/    Logo files and brand guide
-docs/     Terms & Conditions (original, not copied from any other site)
+api/index.js   Vercel serverless function entry point (imports server/src/app.js)
+server/        Express app + Prisma schema + all route logic
+client/        React + Vite + Tailwind frontend
+brand/         Logo files and brand guide
+docs/          Terms & Conditions (original, not copied from any other site)
+vercel.json    Build, rewrites, and cron config for the whole deploy
 ```
 
-## Quick start
+This is an npm workspaces monorepo — one `npm install` at the repo root
+installs both `server/` and `client/`'s dependencies into a single root
+`node_modules`, which is what lets `api/index.js` (at the repo root)
+import `server/src/app.js` directly without needing its own copy of
+Express, Prisma, etc.
 
-### 1. Server
+## Why this architecture
+
+Vercel serverless functions are stateless and short-lived — they can't
+hold a Socket.io connection open, keep a `node-cron` timer running, or
+write to local disk and expect the file to still be there on the next
+request. So, compared to a plain Node/Express deploy, three things are
+different here on purpose:
+
+- **Realtime is Pusher Channels, not Socket.io.** Matching a partner and
+  relaying messages both happen as ordinary POST requests
+  (`/api/queue/join`, `/api/messages/send`); the server pushes an event to
+  Pusher, and Pusher's own infrastructure holds the live connection to
+  each browser. See `server/src/lib/pusher.js`.
+- **Images and verification photos go to Vercel Blob, not local disk.**
+  See `server/src/lib/storage.js` — swap this file if you'd rather use
+  S3 or another provider.
+- **The retention cron is a Vercel Cron job hitting an API route, not
+  `node-cron`.** See `server/src/routes/cron.js` and the `crons` entry in
+  `vercel.json`. It runs once a day, which is plenty of precision for
+  2-day/7-day retention windows.
+- **Prisma uses Neon's serverless driver adapter**, not a plain TCP
+  connection pool — see `server/src/db.js`. A normal connection pool
+  doesn't survive serverless's cold-start/concurrency pattern the way
+  Neon's HTTP/WebSocket-based driver does.
+
+## Deploying to Vercel
+
+### 1. Set up Neon (database)
 
 ```bash
-cd server
-npm install
-cp .env.example .env        # edit values as needed — defaults work for local dev
-npx prisma generate
-npx prisma migrate dev --name init
-npm run dev                 # http://localhost:4000
+npm i -g neon@latest
+neon login
+neon projects create --name tinytalks   # or link an existing project
+neon connection-string production --pooled          # → DATABASE_URL
+neon connection-string production --pooled=false    # → DIRECT_URL
 ```
 
-On first boot it creates an admin account from `ADMIN_BOOTSTRAP_EMAIL` /
-`ADMIN_BOOTSTRAP_PASSWORD` in `.env` — log in with those, then change the
-password (there's no in-app change-password flow yet — update it directly
-in the database or add one before relying on this in production).
+### 2. Set up Pusher (realtime)
 
-**A note on `npx prisma generate`:** this downloads a query-engine binary
-from `binaries.prisma.sh`. That host was blocked by this sandbox's network
-policy while building this, so the Prisma-dependent parts couldn't be
-runtime-tested here — everything else (server boot, routing, error
-handling, the full client) was. This step needs a normal internet
-connection and should just work in your own environment.
+Create a free app at pusher.com → Channels. Its "App Keys" tab has
+`app_id`, `key`, `secret`, and `cluster` — these become
+`PUSHER_APP_ID` / `PUSHER_KEY` / `PUSHER_SECRET` / `PUSHER_CLUSTER`, and
+`key`/`cluster` again as `VITE_PUSHER_KEY` / `VITE_PUSHER_CLUSTER` for the
+client.
 
-**Email OTP** works out of the box with zero setup: with no `SMTP_HOST`
-configured, it uses a free Ethereal (nodemailer sandbox) test inbox and
-prints a preview link to the server console instead of sending real email.
-Set real SMTP credentials in `.env` when you're ready to send actual
-emails.
+### 3. Import the repo into Vercel
+
+In the Vercel dashboard: **Add New → Project**, import this GitHub repo.
+Vercel should detect the root `vercel.json` and use its `buildCommand` /
+`outputDirectory` / `installCommand` automatically — you don't need to
+override the framework preset.
+
+### 4. Attach Vercel Blob storage
+
+Project → **Storage** tab → **Create Database** → **Blob**. This sets
+`BLOB_READ_WRITE_TOKEN` on the project automatically.
+
+### 5. Set environment variables
+
+Project → **Settings** → **Environment Variables**:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | from Neon, pooled connection string |
+| `DIRECT_URL` | from Neon, direct (unpooled) connection string |
+| `JWT_SECRET` | any long random string |
+| `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD` | your first admin login |
+| `PUSHER_APP_ID` / `PUSHER_KEY` / `PUSHER_SECRET` / `PUSHER_CLUSTER` | from Pusher |
+| `VITE_PUSHER_KEY` / `VITE_PUSHER_CLUSTER` | same key/cluster, exposed to the client build |
+| `CRON_SECRET` | any long random string (Vercel sends it back automatically when calling the cron route) |
+| `CLIENT_ORIGIN` | your deployed URL, e.g. `https://tinytalks.live` |
+| `SMTP_*` | optional — see below |
+| `AGE_ESTIMATION_*` | optional — see below |
+
+`BLOB_READ_WRITE_TOKEN` is already set from step 4; you don't add it
+manually.
+
+### 6. Run the migration once
+
+Locally (or in Codespaces), with `DATABASE_URL`/`DIRECT_URL` pointing at
+the same Neon database Vercel uses:
+
+```bash
+npm install
+npm run prisma:migrate
+```
+
+This needs real internet access to `binaries.prisma.sh` for Prisma's
+engine download — that's normal Prisma behavior, not specific to this
+project.
+
+### 7. Deploy
+
+Push to the branch Vercel is watching (or click **Deploy** in the
+dashboard). Vercel runs `npm install` → `npm run prisma:generate && npm
+run build:client` → serves `client/dist` as the static site and
+`api/index.js` as the API, with the cron job registered from
+`vercel.json`.
+
+## Local development (unchanged from before)
+
+```bash
+npm install                 # once, from the repo root — installs both workspaces
+cd server && cp .env.example .env   # fill in Neon/Pusher/Blob values
+npm run dev --workspace server      # http://localhost:4000
+
+cd client && cp .env.example .env   # fill in VITE_PUSHER_KEY/CLUSTER
+npm run dev --workspace client      # http://localhost:5173
+```
+
+The Vite dev server proxies `/api` straight through to `localhost:4000`
+(no path rewriting — see `client/vite.config.js`), matching how the
+`/api` prefix works in production.
+
+**Email OTP** works with zero setup: with no `SMTP_HOST` configured, it
+uses a free Ethereal (nodemailer sandbox) test inbox and prints a preview
+link to the server console. Set real SMTP credentials when ready.
 
 **Age-estimation vendor**: not configured by default, on purpose — see
 `server/src/lib/ageEstimation.js`. Until you set
@@ -56,68 +152,39 @@ to a real facial age-estimation + liveness vendor (Yoti, Persona, Veriff,
 Incode, etc.), image sharing stays disabled for everyone — that's the
 intended safe default, not a bug.
 
-### 2. Client
+## Known limits worth knowing about
 
-```bash
-cd client
-npm install
-npm run dev                 # http://localhost:5173
-```
+- **Vercel function payload size**: serverless functions on Vercel cap
+  request bodies (historically ~4.5MB). The image upload limit in
+  `routes/images.js` is set to 15MB to match the original design intent,
+  but you may need to raise Vercel's own limit (or lower the app's) to
+  match your plan — check current Vercel docs for the exact figure on
+  your plan.
+- **Matching race condition**: `routes/queue.js` claims a waiting match
+  with a delete-then-check pattern rather than a full serialized
+  transaction — see the comment there. Fine for an MVP; worth hardening
+  under real concurrent load.
+- **Vercel Cron granularity**: the Hobby plan may restrict cron frequency;
+  daily is what's configured and is enough for day-scale retention
+  windows. Check your plan's current limits if you want a tighter cron.
 
-The dev server proxies `/api` to `http://localhost:4000` (see
-`vite.config.js`). For production, build with `npm run build` and serve
-`dist/` behind whatever you use for the API (or point it at a deployed
-API origin).
-
-## Switching the database to Postgres (e.g. Neon)
-
-The schema (`server/prisma/schema.prisma`) already targets SQLite for a
-zero-setup local dev experience. To use Postgres instead:
-
-1. Change the datasource:
-   ```prisma
-   datasource db {
-     provider = "postgresql"
-     url      = env("DATABASE_URL")
-   }
-   ```
-2. Set `DATABASE_URL` in `.env` to your Postgres connection string (e.g.
-   from `neon projects create` / `neon connection-string`, or any other
-   Postgres host).
-3. Re-run `npx prisma generate && npx prisma migrate dev`.
-
-Nothing else in the app needs to change — all the route code goes through
-Prisma, not raw SQL.
-
-## Architecture notes
+## Architecture notes carried over from the original design
 
 - **End-to-end encryption**: `tweetnacl`'s `nacl.box` (X25519 +
-  XSalsa20-Poly1305). Keys are generated client-side and never leave the
-  browser; the server only ever stores/relays ciphertext. This is solid
-  for an MVP but doesn't have forward secrecy/key ratcheting like Signal —
-  get a security review before treating this as production-grade for
-  sensitive use.
-- **Matching**: in-memory queue in `server/src/sockets/chat.js`. Fine for
-  one server process; move to a shared store (Redis) before running more
-  than one instance.
-- **Image retention**: see `server/src/jobs/retention.js` — soft-delete
-  from chat at 2 days, hard-delete at 7 days unless the user deletes it
-  themselves (which is immediate). Admins can access a not-yet-hard-deleted
-  image for report review; every access is logged
-  (`AdminImageAccessLog`).
+  XSalsa20-Poly1305), keys generated client-side and never sent to the
+  server. Solid for an MVP; no forward secrecy/key ratcheting like
+  Signal — get a security review before treating this as production-grade
+  for sensitive use.
+- **Image retention**: soft-delete from chat at 2 days, hard-delete at 7
+  days unless the user deletes it themselves (immediate). Admins can
+  access a not-yet-hard-deleted image for report review; every access is
+  logged (`AdminImageAccessLog`).
 - **Ban evasion**: banning writes a hashed identifier to `BanRecord`,
-  which is independent of the `User` row it came from — so it survives
-  guest-account purges and re-registration attempts.
+  independent of the `User` row, so it survives guest-account purges and
+  re-registration attempts.
 - **Reliability**: every async Express route is wrapped in
-  `asyncHandler` and every async Socket.io handler in `safeHandler` (see
-  `server/src/lib/asyncHandler.js` and `server/src/sockets/chat.js`) so a
-  single failed request/message can't crash the whole process and drop
-  every connected user — verified by smoke-testing a forced error against
-  a running instance during development.
-
-## What to do before real users touch this
+  `asyncHandler` (`server/src/lib/asyncHandler.js`) so a single failed
+  request can't crash the whole function.
 
 See [SAFETY_AND_LIMITATIONS.md](./SAFETY_AND_LIMITATIONS.md) for the full
-list — the short version: wire up a real age-estimation vendor, have a
-lawyer review `docs/TERMS_AND_CONDITIONS.md` and add a Privacy Policy,
-add rate limiting beyond OTP, and get the encryption scheme reviewed.
+pre-launch checklist.

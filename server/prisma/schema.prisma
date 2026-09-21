@@ -7,93 +7,45 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-enum AccountType {
-  GUEST
-  REGULAR
-  ADMIN
-}
-
-enum GenderClaim {
-  MALE
-  FEMALE
-  NONBINARY
-  UNSPECIFIED
-}
-
-enum VerificationStatus {
-  NONE
-  PENDING
-  APPROVED
-  REJECTED
-}
-
-enum TicketStatus {
-  OPEN
-  IN_REVIEW
-  RESOLVED
-  DISMISSED
-}
-
-enum TicketCategory {
-  HARASSMENT_OR_ABUSE
-  UNDERAGE_SUSPICION
-  NUDITY_OR_SEXUAL_CONTENT
-  SPAM_OR_SCAM
-  IMPERSONATION_OR_FAKE_PROFILE
-  GENDER_MISREPRESENTATION
-  THREATS_OR_VIOLENCE
-  HATE_SPEECH
-  OTHER
-}
-
-enum ImageViewMode {
-  TIMED_10S
-  ONE_TIME
-}
-
 model User {
-  id                   String              @id @default(uuid())
-  accountType          AccountType         @default(GUEST)
-  email                String?             @unique
+  id                   String         @id @default(uuid())
+  accountType          String         @default("GUEST")
+  email                String?        @unique
   passwordHash         String?
   displayName          String?
 
-  ageConfirmed         Boolean             @default(false) // self-attested 18+ checkbox, required for ALL accounts
+  ageConfirmed         Boolean        @default(false)
   ageConfirmedAt       DateTime?
 
-  genderClaimed        GenderClaim         @default(UNSPECIFIED)
-  genderPhotoPath      String?             // selfie submitted for admin gender review
-  genderVerification   VerificationStatus  @default(NONE)
+  genderClaimed        String         @default("UNSPECIFIED")
+  genderPhotoPath      String?
+  genderVerification   String         @default("NONE")
   genderReviewedBy     String?
   genderReviewedAt     DateTime?
 
-  // "image-verified" flag — required before ANY account (guest or regular)
-  // can send/receive images. Requires BOTH email OTP success AND a passed
-  // facial age-estimation check (see lib/ageEstimation.js). No government
-  // ID is ever collected or stored for this.
-  otpVerified          Boolean             @default(false)
-  ageEstimationPassed  Boolean             @default(false)
-  ageEstimationScore   Float?              // vendor confidence, informational only
+  otpVerified          Boolean        @default(false)
+  ageEstimationPassed  Boolean        @default(false)
+  ageEstimationScore   Float?
   imageVerifiedAt      DateTime?
 
-  premiumGenderFilter  Boolean             @default(false)
+  premiumGenderFilter  Boolean        @default(false)
 
-  banned               Boolean             @default(false)
+  banned               Boolean        @default(false)
   bannedAt             DateTime?
   banReason            String?
 
-  createdAt            DateTime            @default(now())
-  expiresAt            DateTime?           // set for GUEST accounts (createdAt + 2 days)
+  createdAt            DateTime       @default(now())
+  expiresAt            DateTime?
 
-  sentMessages         Message[]           @relation("SentMessages")
-  conversationsA        Conversation[]     @relation("ParticipantA")
-  conversationsB        Conversation[]     @relation("ParticipantB")
-  reportsFiled         Report[]            @relation("ReportsFiled")
-  reportsAgainst       Report[]            @relation("ReportsAgainst")
+  sentMessages         Message[]      @relation("SentMessages")
+  conversationsA       Conversation[] @relation("ParticipantA")
+  conversationsB       Conversation[] @relation("ParticipantB")
+  reportsFiled         Report[]       @relation("ReportsFiled")
+  reportsAgainst       Report[]       @relation("ReportsAgainst")
   otpCodes             OtpCode[]
   publicKeys           PublicKey[]
 
@@ -101,39 +53,35 @@ model User {
   @@index([imageVerifiedAt])
 }
 
-// Persists independently of User so that banning a guest still blocks
-// re-verification after the guest account (and its data) is purged.
 model BanRecord {
-  id               String   @id @default(uuid())
-  identifierHash   String   @unique // sha256(normalized email or phone)
-  reason           String
-  category         TicketCategory?
-  createdAt        DateTime @default(now())
+  id              String   @id @default(uuid())
+  identifierHash  String   @unique
+  reason          String
+  category        String?
+  createdAt       DateTime @default(now())
 
   @@index([identifierHash])
 }
 
 model OtpCode {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  codeHash    String   // never store the raw code
-  purpose     String   @default("image_verification") // or "login"
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash    String
+  purpose     String    @default("image_verification")
   expiresAt   DateTime
   consumedAt  DateTime?
-  attempts    Int      @default(0)
-  createdAt   DateTime @default(now())
+  attempts    Int       @default(0)
+  createdAt   DateTime  @default(now())
 
   @@index([userId, purpose])
 }
 
-// Client-generated X25519 public keys for E2E encryption (nacl.box).
-// Private keys NEVER leave the client / are never sent to the server.
 model PublicKey {
   id        String   @id @default(uuid())
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  publicKey String   // base64
+  publicKey String
   createdAt DateTime @default(now())
 
   @@index([userId])
@@ -162,12 +110,11 @@ model Message {
   senderId       String
   sender         User         @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
 
-  // E2E encrypted payload — server only ever sees ciphertext.
   ciphertext     String
   nonce          String
-  senderPubKey   String       // sender's public key used for this message, so the recipient can derive the shared secret
+  senderPubKey   String
 
-  kind           String       @default("text") // "text" | "image"
+  kind           String       @default("text")
   image          Image?
 
   createdAt      DateTime     @default(now())
@@ -176,30 +123,26 @@ model Message {
 }
 
 model Image {
-  id                String        @id @default(uuid())
-  messageId         String        @unique
-  message           Message       @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  id                String    @id @default(uuid())
+  messageId         String    @unique
+  message           Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
-  // The file itself is stored encrypted-at-rest is out of scope for this
-  // MVP; the file on disk is the ciphertext blob the client encrypted
-  // before upload (server cannot render it without the recipient's key).
   storagePath       String
-  viewMode          ImageViewMode
+  viewMode          String
 
-  uploadedAt        DateTime      @default(now())
+  uploadedAt        DateTime  @default(now())
   firstViewedAt     DateTime?
-  viewedComplete    Boolean       @default(false) // true once the one-time/timed view has been consumed by the recipient
+  viewedComplete    Boolean   @default(false)
 
-  deletedByUser     Boolean       @default(false)  // true if the recipient/sender explicitly deleted it
-  deletedFromChatAt DateTime?     // soft-delete: hidden from chat UI (set by user action, or by the retention cron at +2 days)
-  hardDeleteAt      DateTime?     // when the file+row will be permanently removed (immediately on user delete, else uploadedAt + 7 days)
+  deletedByUser     Boolean   @default(false)
+  deletedFromChatAt DateTime?
+  hardDeleteAt      DateTime?
   hardDeletedAt     DateTime?
 
   @@index([deletedFromChatAt])
   @@index([hardDeleteAt])
 }
 
-// Admin access to a not-yet-hard-deleted image is logged for accountability.
 model AdminImageAccessLog {
   id         String   @id @default(uuid())
   imageId    String
@@ -211,23 +154,23 @@ model AdminImageAccessLog {
 }
 
 model Report {
-  id               String         @id @default(uuid())
-  reporterId       String
-  reporter         User           @relation("ReportsFiled", fields: [reporterId], references: [id], onDelete: Cascade)
-  reportedUserId   String
-  reportedUser     User           @relation("ReportsAgainst", fields: [reportedUserId], references: [id], onDelete: Cascade)
-  conversationId   String?
-  conversation     Conversation?  @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  id              String        @id @default(uuid())
+  reporterId      String
+  reporter        User          @relation("ReportsFiled", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUserId  String
+  reportedUser    User          @relation("ReportsAgainst", fields: [reportedUserId], references: [id], onDelete: Cascade)
+  conversationId  String?
+  conversation    Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
-  category         TicketCategory
-  description      String
-  status           TicketStatus   @default(OPEN)
+  category        String
+  description     String
+  status          String        @default("OPEN")
 
-  assignedAdminId  String?
-  resolutionNote   String?
+  assignedAdminId String?
+  resolutionNote  String?
 
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   @@index([status])
   @@index([reportedUserId])

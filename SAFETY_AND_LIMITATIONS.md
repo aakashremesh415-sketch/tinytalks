@@ -72,19 +72,23 @@ add new account-creation paths — they should all check against
       lacks forward secrecy/ratcheting, and key management (what happens
       when a user's `sessionStorage` clears, multi-device use, etc.)
       needs a real design pass.
-- [ ] Move the in-memory matchmaking queue and public-key store to a
-      shared backing store (Redis, or Postgres directly) before running
-      more than one server process — right now a restart loses queued
-      users' place in line, and a second process wouldn't share the queue
-      at all.
+- [ ] The matchmaking queue lives in Postgres (`WaitingQueueEntry`) so it
+      already survives across serverless invocations, but the "claim a
+      match" step (`routes/queue.js`) isn't a fully serialized
+      transaction — under real concurrent load, harden it with a proper
+      `SELECT ... FOR UPDATE` or equivalent to close the race window
+      described in that file's comments.
 - [ ] Add a real password-reset and change-password flow — neither exists
       yet.
 - [ ] Rate-limit more than just OTP (matching, message sending, report
       filing) to blunt abuse/spam.
-- [ ] Encrypt files at rest on disk (currently the uploaded blobs are
-      exactly what the client encrypted with the recipient's key before
-      upload, which is good, but the server filesystem itself isn't
-      separately encrypted — fine for most threat models, worth
-      confirming for yours).
-- [ ] Load-test the Socket.io matching queue and image upload path before
-      any real traffic.
+- [ ] Confirm Vercel Blob's access model matches your threat model —
+      `lib/storage.js` currently uses `access: 'public'` (an unguessable
+      URL, never handed to a client directly — every image/photo is
+      fetched server-side by an authenticated route), since that's what
+      was available when this was built. If a private/signed-URL mode
+      exists on your installed version, prefer it.
+- [ ] Load-test the matching/messaging path (`routes/queue.js`,
+      `routes/messages.js`) and image upload path before any real traffic
+      — Pusher's free tier caps concurrent connections and daily
+      messages, so check those limits against expected usage too.
