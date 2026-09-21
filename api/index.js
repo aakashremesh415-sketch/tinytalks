@@ -1,12 +1,12 @@
-// Vercel's entry point. Deliberately written as CommonJS (the .cjs
-// extension forces that regardless of the "type" field in any
-// package.json) and loads the actual Express app — which genuinely is
-// an ES module, since server/package.json says "type": "module" — via
-// dynamic import(). That's the fix Vercel's own runtime error suggests
-// for ERR_REQUIRE_ESM: a static top-level `import`/`require` of an ES
-// module from a CommonJS file crashes; dynamic import() works from
-// either module system, so this file works no matter how Vercel's
-// bundler decides to treat api/index on a given build.
+// Vercel's entry point. Deliberately plain CommonJS (no top-level
+// `import`/`export`, and the repo root has no "type": "module" — Vercel
+// doesn't recognize a .cjs extension as a valid Serverless Function file
+// at all, so this can't be forced via extension the way it normally
+// would be) — and it loads the actual Express app, which genuinely is
+// an ES module (server/package.json says "type": "module"), via dynamic
+// import(). That's the fix for ERR_REQUIRE_ESM: a static top-level
+// `import`/`require` of an ES module from a CommonJS file crashes;
+// dynamic import() works from either module system.
 let appPromise;
 let bootstrapPromise;
 
