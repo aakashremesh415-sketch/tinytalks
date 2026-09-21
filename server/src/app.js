@@ -13,6 +13,7 @@ import queueRoutes from './routes/queue.js';
 import messageRoutes from './routes/messages.js';
 import pusherAuthRoutes from './routes/pusherAuth.js';
 import cronRoutes from './routes/cron.js';
+import blockRoutes from './routes/blocks.js';
 
 // Last-resort safety net: every request handler above should already
 // catch its own errors (asyncHandler), but this stops any error that
@@ -49,6 +50,7 @@ app.use('/api/queue', queueRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/pusher', pusherAuthRoutes);
 app.use('/api/cron', cronRoutes);
+app.use('/api/blocks', blockRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

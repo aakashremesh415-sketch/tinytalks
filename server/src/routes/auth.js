@@ -6,10 +6,14 @@ import { prisma } from '../db.js';
 import { signToken, requireAuth } from '../middleware/auth.js';
 import { hashIdentifier } from '../lib/hash.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
-import { uploadObject } from '../lib/storage.js';
+import { uploadObject, deleteObject } from '../lib/storage.js';
 import { normalizeTags } from '../lib/locationTags.js';
+import { checkDailyLimit, remainingToday } from '../lib/dailyLimit.js';
 
 const router = Router();
+
+const NAME_CHANGE_LIMIT = 3;
+const AVATAR_CHANGE_LIMIT = 3;
 
 // Memory, not disk — Vercel's filesystem is ephemeral. The photo goes
 // straight to Vercel Blob (see lib/storage.js); only an admin, through
@@ -139,16 +143,29 @@ router.get('/me', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // Self-service profile edits: display name (freely editable, including
-// via the client's random-name generator) and location tags (self-reported
-// town/district/state, used only to prefer nearby matches in the queue).
+// via the client's random-name generator, rate-limited like a change to
+// avoid abuse), and location tags / interests (self-reported, used only
+// to prefer — never require — similar matches in the queue).
 router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
   const data = {};
 
   if (typeof req.body.displayName === 'string') {
-    data.displayName = req.body.displayName.trim().slice(0, 40) || null;
+    const nextName = req.body.displayName.trim().slice(0, 40) || null;
+    if (nextName !== req.user.displayName) {
+      const { allowed, patch } = checkDailyLimit(req.user.nameChangeCount, req.user.nameChangeWindowStart, NAME_CHANGE_LIMIT);
+      if (!allowed) {
+        return res.status(429).json({ error: `You've reached today's name change limit (${NAME_CHANGE_LIMIT}/day).` });
+      }
+      data.displayName = nextName;
+      data.nameChangeCount = patch.count;
+      data.nameChangeWindowStart = patch.windowStart;
+    }
   }
   if (Array.isArray(req.body.locationTags)) {
     data.locationTags = normalizeTags(req.body.locationTags);
+  }
+  if (Array.isArray(req.body.interests)) {
+    data.interests = normalizeTags(req.body.interests);
   }
   if (Object.keys(data).length === 0) {
     return res.status(400).json({ error: 'Nothing to update.' });
@@ -156,6 +173,79 @@ router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
 
   const user = await prisma.user.update({ where: { id: req.user.id }, data });
   res.json({ user: publicUser(user) });
+}));
+
+// Avatar: same rate limit as display name, same "reviewed before
+// displaying" spirit as the gender-verification photo, except there's no
+// human review queue for this one yet — it's auto-published. Worth adding
+// real moderation before opening this up beyond a small user base.
+router.patch('/me/avatar', requireAuth, upload.single('avatar'), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'An image is required.' });
+
+  const { allowed, patch } = checkDailyLimit(req.user.avatarChangeCount, req.user.avatarChangeWindowStart, AVATAR_CHANGE_LIMIT);
+  if (!allowed) {
+    return res.status(429).json({ error: `You've reached today's avatar change limit (${AVATAR_CHANGE_LIMIT}/day).` });
+  }
+
+  const { url } = await uploadObject(`avatars/${req.user.id}-${Date.now()}.bin`, req.file.buffer, req.file.mimetype);
+  if (req.user.avatarUrl) deleteObject(req.user.avatarUrl).catch(() => {});
+
+  const user = await prisma.user.update({
+    where: { id: req.user.id },
+    data: { avatarUrl: url, avatarChangeCount: patch.count, avatarChangeWindowStart: patch.windowStart },
+  });
+  res.json({ user: publicUser(user) });
+}));
+
+router.delete('/me/avatar', requireAuth, asyncHandler(async (req, res) => {
+  if (!req.user.avatarUrl) return res.json({ user: publicUser(req.user) });
+
+  const { allowed, patch } = checkDailyLimit(req.user.avatarChangeCount, req.user.avatarChangeWindowStart, AVATAR_CHANGE_LIMIT);
+  if (!allowed) {
+    return res.status(429).json({ error: `You've reached today's avatar change limit (${AVATAR_CHANGE_LIMIT}/day).` });
+  }
+
+  deleteObject(req.user.avatarUrl).catch(() => {});
+  const user = await prisma.user.update({
+    where: { id: req.user.id },
+    data: { avatarUrl: null, avatarChangeCount: patch.count, avatarChangeWindowStart: patch.windowStart },
+  });
+  res.json({ user: publicUser(user) });
+}));
+
+router.patch('/change-password', requireAuth, asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!req.user.passwordHash) {
+    return res.status(400).json({ error: "Guest accounts don't have a password to change." });
+  }
+  if (!newPassword || newPassword.length < 8) {
+    return res.status(400).json({ error: 'New password must be at least 8 characters.' });
+  }
+  const ok = await bcrypt.compare(currentPassword || '', req.user.passwordHash);
+  if (!ok) return res.status(401).json({ error: 'Current password is incorrect.' });
+
+  const passwordHash = await bcrypt.hash(newPassword, 12);
+  await prisma.user.update({ where: { id: req.user.id }, data: { passwordHash } });
+  res.json({ ok: true });
+}));
+
+// Self-serve account deletion. Cascades through Prisma's onDelete: Cascade
+// on every relation (messages, conversations, reports, keys, blocks), so
+// this is a real, permanent delete — not a soft-disable.
+router.delete('/me', requireAuth, asyncHandler(async (req, res) => {
+  if (req.user.accountType === 'ADMIN') {
+    return res.status(400).json({ error: "Admin accounts can't be deleted from here." });
+  }
+  if (req.user.passwordHash) {
+    const ok = await bcrypt.compare(req.body?.password || '', req.user.passwordHash);
+    if (!ok) return res.status(401).json({ error: 'Incorrect password.' });
+  }
+
+  if (req.user.avatarUrl) deleteObject(req.user.avatarUrl).catch(() => {});
+  if (req.user.genderPhotoPath) deleteObject(req.user.genderPhotoPath).catch(() => {});
+
+  await prisma.user.delete({ where: { id: req.user.id } });
+  res.json({ ok: true });
 }));
 
 export function publicUser(user) {
@@ -171,6 +261,12 @@ export function publicUser(user) {
     imageVerified: Boolean(user.otpVerified && user.ageEstimationPassed),
     premiumGenderFilter: user.premiumGenderFilter,
     locationTags: user.locationTags || [],
+    interests: user.interests || [],
+    avatarUrl: user.avatarUrl || null,
+    nameChangesRemaining: remainingToday(user.nameChangeCount, user.nameChangeWindowStart, NAME_CHANGE_LIMIT),
+    avatarChangesRemaining: remainingToday(user.avatarChangeCount, user.avatarChangeWindowStart, AVATAR_CHANGE_LIMIT),
+    banned: user.banned,
+    banReason: user.banReason || null,
     expiresAt: user.expiresAt,
     createdAt: user.createdAt,
   };

@@ -20,13 +20,25 @@ const router = Router();
 // matching immediately. They'll match on the next /join call either side
 // makes. Fine for an MVP; worth a proper transaction if volume grows.
 router.post('/join', requireAuth, asyncHandler(async (req, res) => {
-  const { desiredGender, locationTags } = req.body;
+  const { desiredGender, locationTags, interests } = req.body;
   const userId = req.user.id;
   const myTags = normalizeTags(locationTags);
+  const myInterests = normalizeTags(interests);
 
   await prisma.waitingQueueEntry.deleteMany({ where: { userId } });
 
   const canFilter = Boolean(req.user.premiumGenderFilter && desiredGender && desiredGender !== 'ANY');
+
+  // Blocking is checked both directions: a block stops matching whichever
+  // way it was made, so the blocked person can't just match back in.
+  const [blockedByMe, blockedMe] = await Promise.all([
+    prisma.blockedUser.findMany({ where: { blockerId: userId }, select: { blockedId: true } }),
+    prisma.blockedUser.findMany({ where: { blockedId: userId }, select: { blockerId: true } }),
+  ]);
+  const excluded = new Set([
+    ...blockedByMe.map((b) => b.blockedId),
+    ...blockedMe.map((b) => b.blockerId),
+  ]);
 
   const candidates = await prisma.waitingQueueEntry.findMany({
     where: { userId: { not: userId } },
@@ -35,6 +47,7 @@ router.post('/join', requireAuth, asyncHandler(async (req, res) => {
   });
 
   const eligible = candidates.filter((w) => {
+    if (excluded.has(w.userId)) return false;
     const otherWantsFilter = w.desiredGender && w.desiredGender !== 'ANY' && w.canFilter;
     if (canFilter && w.genderClaimed !== desiredGender) return false;
     if (otherWantsFilter && req.user.genderClaimed !== w.desiredGender) return false;
@@ -42,13 +55,19 @@ router.post('/join', requireAuth, asyncHandler(async (req, res) => {
   });
 
   // Soft preference, not a hard filter: with few users online, requiring
-  // an overlapping location tag could leave someone waiting forever.
-  // Prefer the candidate sharing the most tags; Array#sort is stable, so
-  // among equal scores the earliest-waiting candidate (already ordered by
-  // createdAt above) still wins.
+  // an overlapping location tag or interest could leave someone waiting
+  // forever. Prefer the candidate sharing the most tags/interests;
+  // Array#sort is stable, so among equal scores the earliest-waiting
+  // candidate (already ordered by createdAt above) still wins.
   function overlapScore(w) {
-    if (!myTags.length || !w.locationTags?.length) return 0;
-    return w.locationTags.filter((t) => myTags.includes(t)).length;
+    let score = 0;
+    if (myTags.length && w.locationTags?.length) {
+      score += w.locationTags.filter((t) => myTags.includes(t)).length;
+    }
+    if (myInterests.length && w.interests?.length) {
+      score += w.interests.filter((t) => myInterests.includes(t)).length;
+    }
+    return score;
   }
   const match = [...eligible].sort((a, b) => overlapScore(b) - overlapScore(a))[0];
 
@@ -60,6 +79,7 @@ router.post('/join', requireAuth, asyncHandler(async (req, res) => {
         desiredGender: desiredGender || null,
         canFilter,
         locationTags: myTags,
+        interests: myInterests,
       },
     });
     return res.json({ status: 'waiting' });

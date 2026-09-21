@@ -1,8 +1,15 @@
 import { useState } from 'react';
 
-// Chip-style editor for self-reported location tags (town/district/state).
-// Purely self-reported — this app never collects IP or GPS location.
-export default function LocationTags({ tags, onChange, disabled }) {
+// Generic chip-style tag editor — used for both self-reported location
+// tags (town/district/state) and general interests. Purely self-reported;
+// this app never collects IP or GPS location.
+export default function LocationTags({
+  tags,
+  onChange,
+  disabled,
+  placeholder = 'Add a town, district or state…',
+  emptyLabel = "No location tags yet — you'll match with anyone, anywhere.",
+}) {
   const [draft, setDraft] = useState('');
 
   function addTag() {
@@ -42,7 +49,7 @@ export default function LocationTags({ tags, onChange, disabled }) {
         ))}
         {tags.length === 0 && (
           <span className="text-xs text-slate-500 dark:text-slate-400">
-            No location tags yet — you'll match with anyone, anywhere.
+            {emptyLabel}
           </span>
         )}
       </div>
@@ -50,7 +57,7 @@ export default function LocationTags({ tags, onChange, disabled }) {
         <div className="flex gap-2">
           <input
             className="input flex-1 !py-1.5 text-sm"
-            placeholder="Add a town, district or state…"
+            placeholder={placeholder}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {

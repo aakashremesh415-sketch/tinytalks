@@ -7,6 +7,7 @@ import Login from './pages/Login.jsx';
 import Verify from './pages/Verify.jsx';
 import VerifyGender from './pages/VerifyGender.jsx';
 import Chat from './pages/Chat.jsx';
+import Settings from './pages/Settings.jsx';
 import Terms from './pages/Terms.jsx';
 import AdminLayout from './pages/Admin/AdminLayout.jsx';
 import AdminDashboard from './pages/Admin/AdminDashboard.jsx';
@@ -64,6 +65,14 @@ export default function App() {
         element={
           <RequireAuth>
             <Chat />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <RequireAuth>
+            <Settings />
           </RequireAuth>
         }
       />

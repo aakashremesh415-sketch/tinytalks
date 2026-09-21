@@ -4,11 +4,9 @@ import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
 import ReportModal from '../components/ReportModal.jsx';
 import ImageBubble from '../components/ImageBubble.jsx';
-import LocationTags from '../components/LocationTags.jsx';
-import { api, getStoredToken, getErrorMessage } from '../lib/api.js';
+import { api, getStoredToken } from '../lib/api.js';
 import { connectPusher, userChannel } from '../lib/pusher.js';
 import { useAuth } from '../lib/auth.jsx';
-import { generateRandomName } from '../lib/randomName.js';
 import {
   loadOrCreateKeyPair,
   publicKeyToBase64,
@@ -25,7 +23,7 @@ const GENDERS = [
 ];
 
 export default function Chat() {
-  const { user, logout, refreshMe } = useAuth();
+  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const keyPairRef = useRef(null);
   const conversationIdRef = useRef(null); // kept in sync with state below, read inside the Pusher handler bound once at mount
@@ -39,19 +37,14 @@ export default function Chat() {
   const [draft, setDraft] = useState('');
   const [reportOpen, setReportOpen] = useState(false);
   const [imageVerifiedNotice, setImageVerifiedNotice] = useState(false);
+  const [blockBusy, setBlockBusy] = useState(false);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
 
-  // --- Profile: editable display name + self-reported location tags ---
-  const [displayName, setDisplayName] = useState(user?.displayName || '');
-  const [locationTags, setLocationTags] = useState(user?.locationTags || []);
-  const [locationFilterOn, setLocationFilterOn] = useState((user?.locationTags || []).length > 0);
-  const [profileSaving, setProfileSaving] = useState(false);
-  const [profileSaved, setProfileSaved] = useState(false);
-  const [profileError, setProfileError] = useState('');
-
   const imageVerified = Boolean(user?.otpVerified && user?.ageEstimationPassed);
   const isAdmin = user?.accountType === 'ADMIN';
+  const myTags = user?.locationTags || [];
+  const myInterests = user?.interests || [];
 
   useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
 
@@ -106,31 +99,13 @@ export default function Chat() {
     setPartnerPubKey(key);
   }
 
-  async function saveProfile() {
-    setProfileSaving(true);
-    setProfileError('');
-    setProfileSaved(false);
-    try {
-      await api.patch('/auth/me', {
-        displayName,
-        locationTags,
-      });
-      await refreshMe();
-      setProfileSaved(true);
-      setTimeout(() => setProfileSaved(false), 2000);
-    } catch (e) {
-      setProfileError(getErrorMessage(e, 'Could not save profile.'));
-    } finally {
-      setProfileSaving(false);
-    }
-  }
-
   async function findMatch() {
     setStatus('waiting');
     try {
       const { data } = await api.post('/queue/join', {
         desiredGender,
-        locationTags: locationFilterOn ? locationTags : [],
+        locationTags: myTags,
+        interests: myInterests,
       });
       if (data.status === 'matched') {
         await handleMatched(data.conversationId, data.partnerId);
@@ -150,6 +125,20 @@ export default function Chat() {
     setPartnerPubKey(null);
     setMessages([]);
     setStatus('idle');
+  }
+
+  async function blockPartner() {
+    if (!partnerId) return;
+    if (!window.confirm("Block this person? You won't be matched with them again.")) return;
+    setBlockBusy(true);
+    try {
+      await api.post(`/blocks/${partnerId}`);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setBlockBusy(false);
+      leaveConversation();
+    }
   }
 
   function sendText(e) {
@@ -234,6 +223,9 @@ export default function Chat() {
               Unlock images
             </Link>
           )}
+          <Link to="/settings" className="chip bg-slate-100 dark:bg-white/5 border-slate-200 dark:border-white/10 hover:bg-slate-200 dark:hover:bg-white/10">
+            ⚙ Settings
+          </Link>
           <ThemeToggle />
           <button onClick={() => { logout(); navigate('/'); }} className="text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white">
             Log out
@@ -243,78 +235,37 @@ export default function Chat() {
 
       <main className="flex-1 max-w-3xl w-full mx-auto flex flex-col p-3 sm:p-4 gap-4">
         {status !== 'matched' && (
-          <div className="card p-4 sm:p-6 flex-1 flex flex-col gap-6">
-            {/* --- Profile: name + location --- */}
+          <div className="card p-4 sm:p-6 flex-1 flex flex-col items-center justify-center gap-5 text-center">
             <div>
-              <label className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2 block">Your name</label>
-              <div className="flex gap-2">
-                <input
-                  className="input flex-1"
-                  placeholder="Display name"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="btn-secondary !px-3 shrink-0"
-                  title="Suggest a random name"
-                  onClick={() => setDisplayName(generateRandomName())}
-                >
-                  🎲
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-                  Your location tags
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setLocationFilterOn((v) => !v)}
-                  className={`text-xs font-semibold px-2.5 py-1 rounded-full border transition-colors ${
-                    locationFilterOn
-                      ? 'bg-mint-500/10 border-mint-500/30 text-mint-400'
-                      : 'bg-slate-100 dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400'
-                  }`}
-                >
-                  {locationFilterOn ? 'ON' : 'OFF'}
-                </button>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
-                Add towns, districts, or your state — we'll prefer matching you with people who share one. Self-reported only; never tracked.
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Matching as <strong className="text-slate-900 dark:text-slate-100">{user?.displayName || 'Anonymous'}</strong>
               </p>
-              <LocationTags tags={locationTags} onChange={setLocationTags} disabled={!locationFilterOn} />
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm">
+                {(myTags.length || myInterests.length)
+                  ? `Preferring matches sharing: ${[...myTags, ...myInterests].join(', ')}`
+                  : "No location tags or interests set — you'll match with anyone."}
+                {' '}
+                <Link to="/settings" className="text-violet-400 hover:underline">Edit in Settings</Link>
+              </p>
             </div>
 
-            <div className="flex items-center gap-3">
-              <button type="button" className="btn-secondary !py-1.5 !px-4 text-sm" onClick={saveProfile} disabled={profileSaving}>
-                {profileSaving ? 'Saving…' : 'Save profile'}
-              </button>
-              {profileSaved && <span className="text-xs text-mint-400">Saved ✓</span>}
-              {profileError && <span className="text-xs text-coral-400">{profileError}</span>}
+            <div>
+              <label className="text-sm text-slate-500 dark:text-slate-400 mb-2 block">Match with</label>
+              <select
+                className="input max-w-xs mx-auto border-violet-400/60 dark:border-violet-500/50 focus:ring-violet-500"
+                value={desiredGender}
+                onChange={(e) => setDesiredGender(e.target.value)}
+              >
+                {GENDERS.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
+              </select>
             </div>
 
-            <div className="border-t border-slate-200 dark:border-white/5 pt-6 flex flex-col items-center gap-4 text-center">
-              <div>
-                <label className="text-sm text-slate-500 dark:text-slate-400 mb-2 block">Match with</label>
-                <select
-                  className="input max-w-xs mx-auto border-violet-400/60 dark:border-violet-500/50 focus:ring-violet-500"
-                  value={desiredGender}
-                  onChange={(e) => setDesiredGender(e.target.value)}
-                >
-                  {GENDERS.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
-                </select>
-              </div>
-
-              <button onClick={findMatch} disabled={status === 'waiting'} className="btn-primary w-full sm:w-auto">
-                {status === 'waiting' ? 'Looking for someone…' : 'Find someone to talk to'}
-              </button>
-              {status === 'waiting' && (
-                <p className="text-sm text-slate-500">This can take a moment depending on who's online.</p>
-              )}
-            </div>
+            <button onClick={findMatch} disabled={status === 'waiting'} className="btn-primary w-full sm:w-auto">
+              {status === 'waiting' ? 'Looking for someone…' : 'Find someone to talk to'}
+            </button>
+            {status === 'waiting' && (
+              <p className="text-sm text-slate-500">This can take a moment depending on who's online.</p>
+            )}
           </div>
         )}
 
@@ -324,6 +275,9 @@ export default function Chat() {
               <span className="chip bg-mint-500/10 border-mint-500/30 text-mint-400">Connected · end-to-end encrypted</span>
               <div className="flex gap-2">
                 <button className="btn-secondary !py-1.5 !px-3 text-sm" onClick={() => setReportOpen(true)}>Report</button>
+                <button className="btn-secondary !py-1.5 !px-3 text-sm" onClick={blockPartner} disabled={blockBusy}>
+                  {blockBusy ? 'Blocking…' : 'Block'}
+                </button>
                 <button className="btn-secondary !py-1.5 !px-3 text-sm" onClick={leaveConversation}>Leave chat</button>
               </div>
             </div>
