@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply text-slate-900 dark:text-slate-100 font-body antialiased;
+  background-color: #f8fafc;
+  background-image:
+    radial-gradient(60rem 40rem at 90% -10%, rgba(139,92,246,0.10), transparent 60%),
+    radial-gradient(50rem 30rem at -10% 110%, rgba(255,107,91,0.07), transparent 60%);
+  background-attachment: fixed;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+html.dark body {
+  background-color: #0b0e14;
+  background-image:
+    radial-gradient(60rem 40rem at 90% -10%, rgba(139,92,246,0.14), transparent 60%),
+    radial-gradient(50rem 30rem at -10% 110%, rgba(255,107,91,0.10), transparent 60%);
+}
+
+.font-display { font-family: 'Sora', sans-serif; }
+
+.card {
+  @apply bg-white border border-slate-200 rounded-2xl shadow-xl
+    dark:bg-ink-900/80 dark:border-white/5 backdrop-blur-sm transition-colors;
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 font-semibold text-white
+    bg-brand-gradient shadow-glow transition-transform duration-150 hover:scale-[1.02] active:scale-[0.98]
+    disabled:opacity-40 disabled:pointer-events-none;
+}
+
+.btn-secondary {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 font-medium
+    bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200
+    dark:bg-white/5 dark:text-slate-200 dark:border-white/10 dark:hover:bg-white/10
+    transition-colors disabled:opacity-40 disabled:pointer-events-none;
+}
+
+.input {
+  @apply w-full rounded-xl bg-white border border-slate-200 px-4 py-2.5 text-sm text-slate-900
+    placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/60 focus:border-violet-500/60
+    dark:bg-ink-800 dark:border-white/10 dark:text-slate-100 dark:placeholder:text-slate-500 transition-colors;
+}
+
+.chip {
+  @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium border;
+}
