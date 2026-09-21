@@ -4,6 +4,7 @@ import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
 import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { generateRandomName } from '../lib/randomName.js';
 
 export default function Signup() {
   const [form, setForm] = useState({ email: '', password: '', displayName: '', genderClaimed: 'UNSPECIFIED' });
@@ -45,10 +46,20 @@ export default function Signup() {
         </p>
 
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
-          <input
-            className="input" placeholder="Display name" value={form.displayName}
-            onChange={(e) => setForm({ ...form, displayName: e.target.value })}
-          />
+          <div className="flex gap-2">
+            <input
+              className="input flex-1" placeholder="Display name" value={form.displayName}
+              onChange={(e) => setForm({ ...form, displayName: e.target.value })}
+            />
+            <button
+              type="button"
+              className="btn-secondary !px-3 shrink-0"
+              title="Suggest a random name"
+              onClick={() => setForm({ ...form, displayName: generateRandomName() })}
+            >
+              🎲
+            </button>
+          </div>
           <input
             className="input" type="email" placeholder="Email" required value={form.email}
             onChange={(e) => setForm({ ...form, email: e.target.value })}

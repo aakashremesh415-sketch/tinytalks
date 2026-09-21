@@ -14,10 +14,25 @@ export async function bootstrapAdmin() {
 
   const email = process.env.ADMIN_BOOTSTRAP_EMAIL;
   const password = process.env.ADMIN_BOOTSTRAP_PASSWORD;
-  if (!email || !password) return;
+  if (!email) return;
 
   const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) return;
+
+  // Someone may have already signed up with this email as a REGULAR
+  // account before ADMIN_BOOTSTRAP_EMAIL was set to it — promote them in
+  // place rather than skipping, and never touch their existing password.
+  if (existing) {
+    if (existing.accountType !== 'ADMIN') {
+      await prisma.user.update({
+        where: { id: existing.id },
+        data: { accountType: 'ADMIN', genderVerification: 'APPROVED' },
+      });
+      console.log(`[bootstrap] Promoted existing account ${email} to ADMIN.`);
+    }
+    return;
+  }
+
+  if (!password) return; // can't create a brand-new account without one
 
   const passwordHash = await bcrypt.hash(password, 12);
   await prisma.user.create({

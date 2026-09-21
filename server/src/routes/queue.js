@@ -3,6 +3,7 @@ import { prisma } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { notifyUser } from '../lib/pusher.js';
+import { normalizeTags } from '../lib/locationTags.js';
 
 const router = Router();
 
@@ -19,8 +20,9 @@ const router = Router();
 // matching immediately. They'll match on the next /join call either side
 // makes. Fine for an MVP; worth a proper transaction if volume grows.
 router.post('/join', requireAuth, asyncHandler(async (req, res) => {
-  const { desiredGender } = req.body;
+  const { desiredGender, locationTags } = req.body;
   const userId = req.user.id;
+  const myTags = normalizeTags(locationTags);
 
   await prisma.waitingQueueEntry.deleteMany({ where: { userId } });
 
@@ -32,12 +34,23 @@ router.post('/join', requireAuth, asyncHandler(async (req, res) => {
     take: 50,
   });
 
-  const match = candidates.find((w) => {
+  const eligible = candidates.filter((w) => {
     const otherWantsFilter = w.desiredGender && w.desiredGender !== 'ANY' && w.canFilter;
     if (canFilter && w.genderClaimed !== desiredGender) return false;
     if (otherWantsFilter && req.user.genderClaimed !== w.desiredGender) return false;
     return true;
   });
+
+  // Soft preference, not a hard filter: with few users online, requiring
+  // an overlapping location tag could leave someone waiting forever.
+  // Prefer the candidate sharing the most tags; Array#sort is stable, so
+  // among equal scores the earliest-waiting candidate (already ordered by
+  // createdAt above) still wins.
+  function overlapScore(w) {
+    if (!myTags.length || !w.locationTags?.length) return 0;
+    return w.locationTags.filter((t) => myTags.includes(t)).length;
+  }
+  const match = [...eligible].sort((a, b) => overlapScore(b) - overlapScore(a))[0];
 
   async function startWaiting() {
     await prisma.waitingQueueEntry.create({
@@ -46,6 +59,7 @@ router.post('/join', requireAuth, asyncHandler(async (req, res) => {
         genderClaimed: req.user.genderClaimed,
         desiredGender: desiredGender || null,
         canFilter,
+        locationTags: myTags,
       },
     });
     return res.json({ status: 'waiting' });

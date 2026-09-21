@@ -7,6 +7,7 @@ import { signToken, requireAuth } from '../middleware/auth.js';
 import { hashIdentifier } from '../lib/hash.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { uploadObject } from '../lib/storage.js';
+import { normalizeTags } from '../lib/locationTags.js';
 
 const router = Router();
 
@@ -137,6 +138,26 @@ router.get('/me', requireAuth, asyncHandler(async (req, res) => {
   res.json({ user: publicUser(req.user) });
 }));
 
+// Self-service profile edits: display name (freely editable, including
+// via the client's random-name generator) and location tags (self-reported
+// town/district/state, used only to prefer nearby matches in the queue).
+router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
+  const data = {};
+
+  if (typeof req.body.displayName === 'string') {
+    data.displayName = req.body.displayName.trim().slice(0, 40) || null;
+  }
+  if (Array.isArray(req.body.locationTags)) {
+    data.locationTags = normalizeTags(req.body.locationTags);
+  }
+  if (Object.keys(data).length === 0) {
+    return res.status(400).json({ error: 'Nothing to update.' });
+  }
+
+  const user = await prisma.user.update({ where: { id: req.user.id }, data });
+  res.json({ user: publicUser(user) });
+}));
+
 export function publicUser(user) {
   return {
     id: user.id,
@@ -149,6 +170,7 @@ export function publicUser(user) {
     ageEstimationPassed: user.ageEstimationPassed,
     imageVerified: Boolean(user.otpVerified && user.ageEstimationPassed),
     premiumGenderFilter: user.premiumGenderFilter,
+    locationTags: user.locationTags || [],
     expiresAt: user.expiresAt,
     createdAt: user.createdAt,
   };
