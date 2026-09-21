@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api } from '../lib/api.js';
+import { getErrorMessage, api } from '../lib/api.js';
 
 const CATEGORIES = [
   { value: 'HARASSMENT_OR_ABUSE', label: 'Harassment or abuse' },
@@ -29,7 +29,7 @@ export default function ReportModal({ reportedUserId, conversationId, onClose })
       await api.post('/reports', { reportedUserId, conversationId, category, description });
       setDone(true);
     } catch (e2) {
-      setError(e2.response?.data?.error || 'Could not submit report.');
+      setError(getErrorMessage(e2, 'Could not submit report.'));
     } finally {
       setBusy(false);
     }

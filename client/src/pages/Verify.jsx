@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
 import PhotoCapture from '../components/PhotoCapture.jsx';
-import { api } from '../lib/api.js';
+import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
 // Unlocks image sharing. Requires BOTH steps below — never government ID.
@@ -32,7 +32,7 @@ export default function Verify() {
       setDevPreview(data.devPreviewUrl || '');
       setOtpMsg('Code sent. Check your email.');
     } catch (e2) {
-      setOtpMsg(e2.response?.data?.error || 'Could not send code.');
+      setOtpMsg(getErrorMessage(e2, 'Could not send code.'));
     } finally {
       setOtpBusy(false);
     }
@@ -47,7 +47,7 @@ export default function Verify() {
       setOtpStep('done');
       await refreshMe();
     } catch (e2) {
-      setOtpMsg(e2.response?.data?.error || 'Incorrect code.');
+      setOtpMsg(getErrorMessage(e2, 'Incorrect code.'));
     } finally {
       setOtpBusy(false);
     }
@@ -71,7 +71,7 @@ export default function Verify() {
       }
       await refreshMe();
     } catch (e2) {
-      setAgeMsg(e2.response?.data?.error || 'Verification service unavailable.');
+      setAgeMsg(getErrorMessage(e2, 'Verification service unavailable.'));
     } finally {
       setAgeBusy(false);
     }

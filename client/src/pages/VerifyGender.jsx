@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
 import PhotoCapture from '../components/PhotoCapture.jsx';
-import { api } from '../lib/api.js';
+import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
 // Gender-verification photo, submitted as its own step after signup or
@@ -36,7 +36,7 @@ export default function VerifyGender() {
       setSubmitted(true);
       await refreshMe();
     } catch (e2) {
-      setError(e2.response?.data?.error || 'Could not submit photo.');
+      setError(getErrorMessage(e2, 'Could not submit photo.'));
     } finally {
       setBusy(false);
     }

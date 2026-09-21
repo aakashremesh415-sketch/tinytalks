@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
-import { api } from '../lib/api.js';
+import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
 export default function Login() {
@@ -24,7 +24,7 @@ export default function Login() {
       else if (data.user.accountType === 'REGULAR' && data.user.genderVerification === 'NONE') navigate('/verify-gender');
       else navigate('/chat');
     } catch (e2) {
-      setError(e2.response?.data?.error || 'Invalid credentials.');
+      setError(getErrorMessage(e2, 'Invalid credentials.'));
     } finally {
       setLoading(false);
     }

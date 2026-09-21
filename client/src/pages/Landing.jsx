@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
-import { api } from '../lib/api.js';
+import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
 export default function Landing() {
@@ -24,7 +24,7 @@ export default function Landing() {
       login(data.token, data.user);
       navigate('/chat');
     } catch (e) {
-      setError(e.response?.data?.error || 'Something went wrong.');
+      setError(getErrorMessage(e));
     } finally {
       setLoading(false);
     }

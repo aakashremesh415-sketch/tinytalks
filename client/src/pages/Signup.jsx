@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
-import { api } from '../lib/api.js';
+import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
 export default function Signup() {
@@ -27,7 +27,7 @@ export default function Signup() {
       // account exists, rather than blocking this form on it.
       navigate('/verify-gender');
     } catch (e2) {
-      setError(e2.response?.data?.error || 'Something went wrong.');
+      setError(getErrorMessage(e2));
     } finally {
       setLoading(false);
     }
