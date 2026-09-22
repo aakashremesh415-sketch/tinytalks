@@ -558,9 +558,24 @@ export default function Chat() {
 
               <div ref={scrollRef} className="flex-1 overflow-y-auto card p-3 sm:p-4 space-y-3 min-h-[50vh]">
                 {historyLoading && <p className="text-center text-sm text-slate-500 mt-10">Loading…</p>}
-                {!historyLoading && activeMessages.map((m) => (
-                  <MessageBubble key={m.id} message={m} keyPair={keyPairRef.current} />
-                ))}
+                {!historyLoading && activeMessages.map((m, i) => {
+                  // Only label the first message of a run from the same
+                  // sender (like most chat apps) rather than repeating a
+                  // name above every single bubble — in a 1:1 thread the
+                  // sender only ever flips between "me" and "them", so
+                  // comparing `incoming` to the previous message is enough.
+                  const prev = activeMessages[i - 1];
+                  const showName = i === 0 || prev.incoming !== m.incoming;
+                  const senderName = m.incoming ? (activeConv.partnerDisplayName || 'Anonymous') : 'You';
+                  return (
+                    <MessageBubble
+                      key={m.id}
+                      message={m}
+                      keyPair={keyPairRef.current}
+                      senderName={showName ? senderName : null}
+                    />
+                  );
+                })}
                 {!historyLoading && activeMessages.length === 0 && (
                   <p className="text-center text-sm text-slate-500 mt-10">Say hi 👋 — this conversation is end-to-end encrypted.</p>
                 )}
@@ -844,7 +859,7 @@ function ConversationPreviewText({ conv, myUserId, keyPair }) {
   return text || '🔒 New message';
 }
 
-function MessageBubble({ message, keyPair }) {
+function MessageBubble({ message, keyPair, senderName }) {
   const isMine = !message.incoming;
   let text = message.plaintext;
 
@@ -856,7 +871,12 @@ function MessageBubble({ message, keyPair }) {
   }
 
   return (
-    <div className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex flex-col ${isMine ? 'items-end' : 'items-start'}`}>
+      {senderName && (
+        <span className="text-xs font-medium text-slate-500 dark:text-slate-400 px-1 mb-1">
+          {senderName}
+        </span>
+      )}
       {message.kind === 'image' ? (
         <ImageBubble message={message} keyPair={keyPair} isMine={isMine} />
       ) : (

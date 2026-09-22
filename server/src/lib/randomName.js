@@ -1,10 +1,12 @@
-// Client-side random display-name generator — no server round trip needed
-// for the instant-reroll 🎲 button in Signup/Settings. Deliberately
-// whimsical/anonymous-sounding, never anything identifying, and kept in
-// sync with server/src/lib/randomName.js — the server generates the same
-// style of name automatically when a guest account is created (and as a
-// fallback for any older account with no name yet), so this list and that
-// one are meant to match.
+// Server-side random display-name generator, used to auto-assign a name
+// at account creation (guest signup, and as a fallback for any account
+// that somehow still has none) so nobody ever appears to a stranger as a
+// bare "Anonymous". Mirrors client/src/lib/randomName.js (used there for
+// the instant-reroll 🎲 button in Signup/Settings) so the vocabulary and
+// style match everywhere the name can be generated. Every word here is
+// deliberately wholesome/mood-or-nature-themed — never anything that
+// could combine into something offensive, so generated names never need
+// to go through lib/profanity.js the way user-TYPED names do.
 const ADJECTIVES = [
   'Quiet', 'Silent', 'Curious', 'Bright', 'Gentle', 'Bold', 'Lucky', 'Mellow',
   'Swift', 'Calm', 'Wandering', 'Hidden', 'Cosmic', 'Velvet', 'Amber',

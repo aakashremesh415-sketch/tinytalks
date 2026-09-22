@@ -9,6 +9,8 @@ import { asyncHandler } from '../lib/asyncHandler.js';
 import { uploadObject, deleteObject } from '../lib/storage.js';
 import { normalizeTags } from '../lib/locationTags.js';
 import { checkDailyLimit, remainingToday } from '../lib/dailyLimit.js';
+import { generateRandomName } from '../lib/randomName.js';
+import { isOffensiveName } from '../lib/profanity.js';
 
 const router = Router();
 
@@ -35,6 +37,11 @@ router.post('/guest', asyncHandler(async (req, res) => {
   const user = await prisma.user.create({
     data: {
       accountType: 'GUEST',
+      // Every guest gets a friendly random name up front (see
+      // lib/randomName.js) instead of showing up to their chat partner as
+      // a bare "Anonymous" — they can change it any time from Settings,
+      // subject to the same daily rate limit as any other name change.
+      displayName: generateRandomName(),
       ageConfirmed: true,
       ageConfirmedAt: new Date(),
       expiresAt,
@@ -77,6 +84,11 @@ router.post('/signup', asyncHandler(async (req, res) => {
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) return res.status(409).json({ error: 'Email already registered.' });
 
+  const trimmedName = typeof displayName === 'string' ? displayName.trim().slice(0, 40) : '';
+  if (trimmedName && isOffensiveName(trimmedName)) {
+    return res.status(400).json({ error: "That display name isn't allowed. Please choose another." });
+  }
+
   const passwordHash = await bcrypt.hash(password, 12);
 
   const user = await prisma.user.create({
@@ -84,7 +96,9 @@ router.post('/signup', asyncHandler(async (req, res) => {
       accountType: 'REGULAR',
       email,
       passwordHash,
-      displayName: displayName || null,
+      // Same as guest signup: fall back to an auto-generated random name
+      // rather than leaving it blank, so nobody starts out as "Anonymous".
+      displayName: trimmedName || generateRandomName(),
       ageConfirmed: true,
       ageConfirmedAt: new Date(),
       genderClaimed: genderClaimed || 'UNSPECIFIED',
@@ -134,8 +148,16 @@ router.post('/login', asyncHandler(async (req, res) => {
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
-  const token = signToken(user);
-  res.json({ token, user: publicUser(user) });
+  // Backfill for any account created before guest/signup started
+  // auto-assigning a name — so a returning user with no name set yet
+  // stops appearing to strangers as a bare "Anonymous" too.
+  const withName = user.displayName ? user : await prisma.user.update({
+    where: { id: user.id },
+    data: { displayName: generateRandomName() },
+  });
+
+  const token = signToken(withName);
+  res.json({ token, user: publicUser(withName) });
 }));
 
 router.get('/me', requireAuth, asyncHandler(async (req, res) => {
@@ -152,6 +174,9 @@ router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
   if (typeof req.body.displayName === 'string') {
     const nextName = req.body.displayName.trim().slice(0, 40) || null;
     if (nextName !== req.user.displayName) {
+      if (nextName && isOffensiveName(nextName)) {
+        return res.status(400).json({ error: "That display name isn't allowed. Please choose another." });
+      }
       const { allowed, patch } = checkDailyLimit(req.user.nameChangeCount, req.user.nameChangeWindowStart, NAME_CHANGE_LIMIT);
       if (!allowed) {
         return res.status(429).json({ error: `You've reached today's name change limit (${NAME_CHANGE_LIMIT}/day).` });
