@@ -5,6 +5,7 @@ import ThemeToggle from '../components/ThemeToggle.jsx';
 import PhotoCapture from '../components/PhotoCapture.jsx';
 import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { useSeo } from '../lib/seo.js';
 
 // Gender-verification photo, submitted as its own step after signup or
 // login (rather than blocking the signup form on it) so it can be taken
@@ -16,6 +17,8 @@ export default function VerifyGender() {
   const { user, refreshMe } = useAuth();
   const navigate = useNavigate();
   const [photo, setPhoto] = useState(null);
+
+  useSeo({ title: 'Verify gender — tinytalks.live', noindex: true, path: '/verify-gender' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [submitted, setSubmitted] = useState(false);

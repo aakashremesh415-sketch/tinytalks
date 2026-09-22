@@ -2,6 +2,7 @@ import { NavLink, Outlet, useNavigate, Link } from 'react-router-dom';
 import Logo from '../../components/Logo.jsx';
 import ThemeToggle from '../../components/ThemeToggle.jsx';
 import { useAuth } from '../../lib/auth.jsx';
+import { useSeo } from '../../lib/seo.js';
 
 const NAV = [
   { to: '/admin', label: 'Dashboard', end: true },
@@ -13,6 +14,8 @@ const NAV = [
 export default function AdminLayout() {
   const { logout } = useAuth();
   const navigate = useNavigate();
+
+  useSeo({ title: 'Admin — tinytalks.live', noindex: true, path: '/admin' });
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row">

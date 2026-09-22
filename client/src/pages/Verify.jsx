@@ -5,11 +5,14 @@ import ThemeToggle from '../components/ThemeToggle.jsx';
 import PhotoCapture from '../components/PhotoCapture.jsx';
 import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { useSeo } from '../lib/seo.js';
 
 // Unlocks image sharing. Requires BOTH steps below — never government ID.
 export default function Verify() {
   const { user, refreshMe } = useAuth();
   const navigate = useNavigate();
+
+  useSeo({ title: 'Verify — tinytalks.live', noindex: true, path: '/verify' });
 
   const [email, setEmail] = useState(user?.email || '');
   const [code, setCode] = useState('');

@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
 import termsRaw from '../content/terms.md?raw';
+import { useSeo } from '../lib/seo.js';
 
 // Minimal, dependency-free markdown rendering — good enough for a single
 // static legal document without pulling in a full markdown lib. Works on
@@ -52,6 +53,12 @@ function stripBold(text) {
 }
 
 export default function Terms() {
+  useSeo({
+    title: 'Terms & Conditions — tinytalks.live',
+    description: "tinytalks.live's terms and conditions, including age requirements, acceptable use, and how guest and account data is handled.",
+    path: '/terms',
+  });
+
   return (
     <div className="min-h-screen">
       <header className="max-w-3xl mx-auto px-6 py-6 flex items-center justify-between">

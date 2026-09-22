@@ -787,30 +787,19 @@ function FriendsPanel({ user, activeConv, view, incomingRequests, friends, frien
         )}
         <div className="space-y-1">
           {friends.map((f) => (
-            <div key={f.userId} className="group flex items-start gap-1">
+            <div key={f.userId} className="group flex items-center gap-1">
               <button
                 onClick={() => onStartChat(f.userId)}
                 disabled={friendActionBusy === f.userId}
-                className="flex-1 min-w-0 text-left rounded-lg px-3 py-2 hover:bg-slate-100 dark:hover:bg-white/5"
+                className="flex-1 min-w-0 text-left rounded-lg px-3 py-2 hover:bg-slate-100 dark:hover:bg-white/5 flex items-center gap-2"
               >
-                <span className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-mint-500 shrink-0" />
-                  <span className="text-sm truncate">{f.displayName}</span>
-                </span>
-                {/* Interests are only ever present here if this friend has
-                    accepted AND hasn't marked them private (server-side
-                    filtering — see routes/friends.js shape()); an empty
-                    array just means "nothing to show", not "hidden". */}
-                {f.interests?.length > 0 && (
-                  <span className="block text-xs text-slate-500 dark:text-slate-400 truncate pl-4 mt-0.5">
-                    {f.interests.join(', ')}
-                  </span>
-                )}
+                <span className="h-2 w-2 rounded-full bg-mint-500 shrink-0" />
+                <span className="text-sm truncate">{f.displayName}</span>
               </button>
               <button
                 onClick={() => onRemove(f.userId)}
                 disabled={friendActionBusy === f.userId}
-                className="opacity-0 group-hover:opacity-100 text-xs text-slate-400 hover:text-coral-500 px-1.5 py-2 disabled:opacity-50"
+                className="opacity-0 group-hover:opacity-100 text-xs text-slate-400 hover:text-coral-500 px-1.5 disabled:opacity-50"
                 title="Remove friend"
               >
                 ✕

@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Disallow: /chat
+Disallow: /settings
+Disallow: /verify
+Disallow: /verify-gender
+Disallow: /admin
+
+Sitemap: https://tinytalks.live/sitemap.xml

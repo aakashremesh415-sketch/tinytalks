@@ -5,6 +5,7 @@ import ThemeToggle from '../components/ThemeToggle.jsx';
 import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { generateRandomName } from '../lib/randomName.js';
+import { useSeo } from '../lib/seo.js';
 
 export default function Signup() {
   const [form, setForm] = useState({ email: '', password: '', displayName: '', genderClaimed: 'UNSPECIFIED' });
@@ -13,6 +14,12 @@ export default function Signup() {
   const [error, setError] = useState('');
   const navigate = useNavigate();
   const { login } = useAuth();
+
+  useSeo({
+    title: 'Create a free account — tinytalks.live',
+    description: 'Create a free tinytalks.live account to keep your chat history, friends list, and profile across visits — or start chatting as a guest instead.',
+    path: '/signup',
+  });
 
   async function onSubmit(e) {
     e.preventDefault();

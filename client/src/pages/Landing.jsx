@@ -2,8 +2,15 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
+import LandingSeoContent from '../content/LandingSeoContent.jsx';
+import { buildLandingJsonLd } from '../content/seoJsonLd.js';
+import { useSeo } from '../lib/seo.js';
 import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+
+const TITLE = 'tinytalks.live — Free Random Chat App | Talk to Strangers Anonymously';
+const DESCRIPTION =
+  'tinytalks is a free random chat app for anonymous, end-to-end encrypted conversations with real strangers. No account required — start chatting as a guest in seconds.';
 
 export default function Landing() {
   const [ageConfirmed, setAgeConfirmed] = useState(false);
@@ -11,6 +18,8 @@ export default function Landing() {
   const [error, setError] = useState('');
   const navigate = useNavigate();
   const { login } = useAuth();
+
+  useSeo({ title: TITLE, description: DESCRIPTION, path: '/', jsonLd: buildLandingJsonLd() });
 
   async function continueAsGuest() {
     if (!ageConfirmed) {
@@ -41,21 +50,12 @@ export default function Landing() {
         </nav>
       </header>
 
-      <main className="flex-1 flex items-center">
-        <div className="max-w-5xl w-full mx-auto px-6 grid md:grid-cols-2 gap-12 items-center py-12">
-          <div>
-            <h1 className="font-display text-4xl sm:text-5xl font-extrabold leading-tight">
-              Talk to someone new.
-              <span className="block bg-brand-gradient bg-clip-text text-transparent">
-                Encrypted. Anonymous. Real.
-              </span>
-            </h1>
-            <p className="mt-5 text-slate-500 dark:text-slate-400 text-lg max-w-md">
-              tinytalks connects you with a random stranger for a private,
-              end-to-end encrypted conversation — no account required to start.
-            </p>
+      <main className="flex-1">
+        <div className="max-w-5xl w-full mx-auto px-6 grid md:grid-cols-[1fr_320px] gap-12 items-start py-12">
+          <LandingSeoContent />
 
-            <div className="mt-8 card p-5 max-w-sm">
+          <div className="md:sticky md:top-12">
+            <div className="card p-5">
               <label className="flex items-start gap-3 cursor-pointer">
                 <input
                   type="checkbox"
@@ -85,31 +85,15 @@ export default function Landing() {
               </p>
             </div>
           </div>
-
-          <div className="hidden md:block">
-            <FeatureList />
-          </div>
         </div>
       </main>
-    </div>
-  );
-}
 
-function FeatureList() {
-  const items = [
-    { title: 'End-to-end encrypted', body: 'Messages are encrypted on your device — we cannot read them, ever.' },
-    { title: 'Gender filter', body: 'Match with the gender you prefer. Free for early users.' },
-    { title: 'Verified, safer images', body: 'Self-destructing photo sharing, unlocked only after a quick age check — no ID required.' },
-    { title: 'Real moderation', body: 'Reports go to a real review queue with clear categories, not a black box.' },
-  ];
-  return (
-    <div className="space-y-4">
-      {items.map((it) => (
-        <div key={it.title} className="card p-4">
-          <p className="font-display font-semibold text-slate-900 dark:text-slate-100">{it.title}</p>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">{it.body}</p>
-        </div>
-      ))}
+      <footer className="max-w-5xl w-full mx-auto px-6 py-8 text-xs text-slate-400 dark:text-slate-500 flex flex-wrap gap-x-4 gap-y-2">
+        <span>&copy; {new Date().getFullYear()} tinytalks.live</span>
+        <a href="/terms" className="hover:underline">Terms &amp; Conditions</a>
+        <a href="/login" className="hover:underline">Log in</a>
+        <a href="/signup" className="hover:underline">Create account</a>
+      </footer>
     </div>
   );
 }

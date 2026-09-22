@@ -4,6 +4,7 @@ import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
 import { getErrorMessage, api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { useSeo } from '../lib/seo.js';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -12,6 +13,12 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { login } = useAuth();
+
+  useSeo({
+    title: 'Log in — tinytalks.live',
+    description: 'Log in to your tinytalks.live account to keep your chat history, friends, and profile across visits.',
+    path: '/login',
+  });
 
   async function onSubmit(e) {
     e.preventDefault();
