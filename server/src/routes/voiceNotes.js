@@ -35,31 +35,51 @@ router.post('/', requireAuth, upload.single('audio'), asyncHandler(async (req, r
     return res.status(404).json({ error: 'Conversation not found.' });
   }
 
-  const { url } = await uploadObject(`voice-notes/${uuid()}.bin`, req.file.buffer, 'application/octet-stream');
+  // Both steps below get their own try/catch — this has been a hard bug to
+  // pin down over several rounds precisely because the generic global
+  // error handler (app.js) only ever surfaced "Internal server error" to
+  // the client, with the real cause visible only in Vercel's own function
+  // logs. Surfacing err.message directly here (this route only — not a
+  // blanket change to the global handler) turns the very next failed
+  // attempt into a self-diagnosing one instead of needing another round of
+  // screenshots.
+  let url;
+  try {
+    ({ url } = await uploadObject(`voice-notes/${uuid()}.bin`, req.file.buffer, 'application/octet-stream'));
+  } catch (err) {
+    console.error('[voice-notes] blob upload failed:', err);
+    return res.status(502).json({ error: `Could not store the voice note (upload step): ${err.message}` });
+  }
 
   const uploadedAt = new Date();
   const hardDeleteAt = new Date(uploadedAt.getTime() + 7 * 24 * 60 * 60 * 1000);
   const parsedDuration = Number.parseInt(durationSec, 10);
 
-  const message = await prisma.message.create({
-    data: {
-      conversationId,
-      senderId: req.user.id,
-      ciphertext: '',
-      nonce,
-      senderPubKey,
-      kind: 'voice',
-      voiceNote: {
-        create: {
-          storagePath: url,
-          uploadedAt,
-          hardDeleteAt,
-          durationSec: Number.isFinite(parsedDuration) ? parsedDuration : null,
+  let message;
+  try {
+    message = await prisma.message.create({
+      data: {
+        conversationId,
+        senderId: req.user.id,
+        ciphertext: '',
+        nonce,
+        senderPubKey,
+        kind: 'voice',
+        voiceNote: {
+          create: {
+            storagePath: url,
+            uploadedAt,
+            hardDeleteAt,
+            durationSec: Number.isFinite(parsedDuration) ? parsedDuration : null,
+          },
         },
       },
-    },
-    include: { voiceNote: true },
-  });
+      include: { voiceNote: true },
+    });
+  } catch (err) {
+    console.error('[voice-notes] message/voiceNote create failed:', err);
+    return res.status(500).json({ error: `Could not save the voice note (database step): ${err.message}` });
+  }
 
   const partnerId = conversation.participantAId === req.user.id
     ? conversation.participantBId

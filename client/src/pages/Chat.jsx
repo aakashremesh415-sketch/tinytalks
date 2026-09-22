@@ -880,7 +880,11 @@ export default function Chat() {
       }));
     } catch (err) {
       console.error(err);
-      window.alert("Couldn't send that voice note — please try again.");
+      // Shows the server's actual reason (see the matching change in
+      // routes/voiceNotes.js) instead of a fixed generic message — this
+      // bug has been hard to pin down over several rounds precisely
+      // because "please try again" hid whatever the real cause was.
+      window.alert(getErrorMessage(err, "Couldn't send that voice note — please try again."));
     }
   }
 
