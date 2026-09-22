@@ -192,6 +192,9 @@ router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
   if (Array.isArray(req.body.interests)) {
     data.interests = normalizeTags(req.body.interests);
   }
+  if (typeof req.body.interestsPrivate === 'boolean') {
+    data.interestsPrivate = req.body.interestsPrivate;
+  }
   if (Object.keys(data).length === 0) {
     return res.status(400).json({ error: 'Nothing to update.' });
   }
@@ -287,6 +290,7 @@ export function publicUser(user) {
     premiumGenderFilter: user.premiumGenderFilter,
     locationTags: user.locationTags || [],
     interests: user.interests || [],
+    interestsPrivate: Boolean(user.interestsPrivate),
     avatarUrl: user.avatarUrl || null,
     nameChangesRemaining: remainingToday(user.nameChangeCount, user.nameChangeWindowStart, NAME_CHANGE_LIMIT),
     avatarChangesRemaining: remainingToday(user.avatarChangeCount, user.avatarChangeWindowStart, AVATAR_CHANGE_LIMIT),

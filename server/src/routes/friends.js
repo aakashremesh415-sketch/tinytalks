@@ -9,12 +9,20 @@ const router = Router();
 function shape(f, myId) {
   const isRequester = f.requesterId === myId;
   const other = isRequester ? f.addressee : f.requester;
+  const isFriend = f.status === 'ACCEPTED';
+  // Interests are only ever shared with an ACCEPTED friend, and only if
+  // the other person hasn't marked them private in Settings (Profile tab
+  // → interestsPrivate). Never exposed to a pending request either
+  // direction — accepting is what unlocks it, same as everything else
+  // about being friends here.
+  const interestsVisible = isFriend && !other.interestsPrivate;
   return {
     userId: other.id,
     displayName: other.displayName || 'Anonymous',
     status: f.status,
     direction: isRequester ? 'outgoing' : 'incoming',
     createdAt: f.createdAt,
+    interests: interestsVisible ? (other.interests || []) : [],
   };
 }
 
@@ -23,8 +31,8 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const rows = await prisma.friendship.findMany({
     where: { OR: [{ requesterId: myId }, { addresseeId: myId }] },
     include: {
-      requester: { select: { id: true, displayName: true } },
-      addressee: { select: { id: true, displayName: true } },
+      requester: { select: { id: true, displayName: true, interests: true, interestsPrivate: true } },
+      addressee: { select: { id: true, displayName: true, interests: true, interestsPrivate: true } },
     },
     orderBy: { createdAt: 'desc' },
   });

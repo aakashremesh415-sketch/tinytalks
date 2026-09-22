@@ -6,6 +6,7 @@ import LocationTags from '../components/LocationTags.jsx';
 import { api, getErrorMessage } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { generateRandomName } from '../lib/randomName.js';
+import { useSeo } from '../lib/seo.js';
 
 const TABS = [
   { key: 'profile', label: 'Profile' },
@@ -19,6 +20,8 @@ const TABS = [
 export default function Settings() {
   const { user } = useAuth();
   const [tab, setTab] = useState('profile');
+
+  useSeo({ title: 'Settings — tinytalks.live', noindex: true, path: '/settings' });
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -65,6 +68,7 @@ function ProfileTab() {
   const [displayName, setDisplayName] = useState(user?.displayName || '');
   const [locationTags, setLocationTags] = useState(user?.locationTags || []);
   const [interests, setInterests] = useState(user?.interests || []);
+  const [interestsPrivate, setInterestsPrivate] = useState(Boolean(user?.interestsPrivate));
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [nameBusy, setNameBusy] = useState(false);
   const [tagsBusy, setTagsBusy] = useState(false);
@@ -92,7 +96,7 @@ function ProfileTab() {
   async function saveTags() {
     setTagsBusy(true); setError('');
     try {
-      await api.patch('/auth/me', { locationTags, interests });
+      await api.patch('/auth/me', { locationTags, interests, interestsPrivate });
       await refreshMe();
       flashSaved('tags');
     } catch (e) {
@@ -184,6 +188,21 @@ function ProfileTab() {
           placeholder="Add an interest (music, gaming, movies)…"
           emptyLabel="No interests yet — add some to match with people who share them."
         />
+        <label className="flex items-start gap-2.5 mt-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={interestsPrivate}
+            onChange={(e) => setInterestsPrivate(e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-slate-300 dark:border-white/20 bg-slate-100 dark:bg-ink-800 text-violet-500 focus:ring-violet-500"
+          />
+          <span className="text-sm text-slate-600 dark:text-slate-300">
+            Keep my interests private from friends
+            <span className="block text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              By default, people you're friends with can see your interests. This never affects
+              random-chat matching, which always uses your interests either way.
+            </span>
+          </span>
+        </label>
       </div>
 
       <div className="flex items-center gap-3">
