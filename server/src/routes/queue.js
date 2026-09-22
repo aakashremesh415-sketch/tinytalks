@@ -92,9 +92,34 @@ router.post('/join', requireAuth, asyncHandler(async (req, res) => {
   const claimed = await prisma.waitingQueueEntry.deleteMany({ where: { id: match.id } });
   if (claimed.count === 0) return startWaiting();
 
-  const conversation = await prisma.conversation.create({
-    data: { participantAId: userId, participantBId: match.userId },
+  // Reuse whatever conversation already exists between this exact pair
+  // (from an earlier random match, or from being/becoming friends) rather
+  // than always spinning up a new one — otherwise two people who cross
+  // paths in the queue more than once (easy in a small user base, and
+  // routine for friends who queue hoping to land each other) end up with
+  // several duplicate threads and split history instead of one. Mirrors
+  // the same lookup routes/friends.js's /start-chat already does.
+  let conversation = await prisma.conversation.findFirst({
+    where: {
+      OR: [
+        { participantAId: userId, participantBId: match.userId },
+        { participantAId: match.userId, participantBId: userId },
+      ],
+    },
+    orderBy: { createdAt: 'desc' },
   });
+  if (!conversation) {
+    conversation = await prisma.conversation.create({
+      data: { participantAId: userId, participantBId: match.userId },
+    });
+  } else if (conversation.endedAt) {
+    // Picking the conversation back up — clear the "ended" mark so it
+    // reads as active again rather than a stale, closed-out thread.
+    conversation = await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { endedAt: null },
+    });
+  }
 
   await notifyUser(match.userId, 'queue:matched', {
     conversationId: conversation.id,

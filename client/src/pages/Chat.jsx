@@ -5,6 +5,8 @@ import ThemeToggle from '../components/ThemeToggle.jsx';
 import ReportModal from '../components/ReportModal.jsx';
 import ImageBubble from '../components/ImageBubble.jsx';
 import EmojiPicker from '../components/EmojiPicker.jsx';
+import StickerPicker, { stickerById } from '../components/StickerPicker.jsx';
+import GifPicker from '../components/GifPicker.jsx';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useRealtime } from '../lib/realtime.jsx';
@@ -56,15 +58,19 @@ function decodeHistoryMessage(m, myUserId, keyPair) {
       createdAt: m.createdAt,
     };
   }
+  // Text, stickers and GIFs all flow through the same ciphertext/nonce
+  // columns — a sticker's "text" is just its id (e.g. "fire"), a GIF's is
+  // its CDN URL — so they share this same decode path; `m.kind` (not a
+  // hardcoded 'text') is what tells MessageBubble how to render it.
   if (!incoming) {
     // My own historical message — the server never stored plaintext, and
     // nacl.box needs the recipient's key (not mine) to re-derive it, so
     // this only works if I sent it from this same browser (see sentCache.js).
     const cached = getCachedSentPlaintext(m.id);
-    return { id: m.id, kind: 'text', plaintext: cached, replyToId: m.replyToId || null, editedAt: m.editedAt || null, incoming: false, createdAt: m.createdAt };
+    return { id: m.id, kind: m.kind, plaintext: cached, replyToId: m.replyToId || null, editedAt: m.editedAt || null, incoming: false, createdAt: m.createdAt };
   }
   const text = decryptText(m.ciphertext, m.nonce, m.senderPubKey, keyPair.secretKey);
-  return { id: m.id, kind: 'text', plaintext: text, replyToId: m.replyToId || null, editedAt: m.editedAt || null, incoming: true, createdAt: m.createdAt };
+  return { id: m.id, kind: m.kind, plaintext: text, replyToId: m.replyToId || null, editedAt: m.editedAt || null, incoming: true, createdAt: m.createdAt };
 }
 
 function formatMessageTime(iso) {
@@ -74,6 +80,19 @@ function formatMessageTime(iso) {
   } catch {
     return '';
   }
+}
+
+// Short label for a message shown as a quote — in the reply-preview bar
+// above the composer, and in the quoted snippet inside a reply bubble.
+function replyPreviewLabel(msg) {
+  if (!msg) return '…';
+  if (msg.kind === 'image') return '📷 Photo';
+  if (msg.kind === 'sticker') {
+    const s = stickerById(msg.plaintext);
+    return s ? `${s.emoji} Sticker` : '🏷️ Sticker';
+  }
+  if (msg.kind === 'gif') return '🎞️ GIF';
+  return msg.plaintext ?? '…';
 }
 
 // Which conversation (if any) was open before the user navigated away from
@@ -116,6 +135,8 @@ export default function Chat() {
   const [blockBusy, setBlockBusy] = useState(false);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
+  const nearBottomRef = useRef(true); // whether the thread is scrolled near its bottom right now
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
 
   const imageVerified = Boolean(user?.otpVerified && user?.ageEstimationPassed);
   const isAdmin = user?.accountType === 'ADMIN';
@@ -189,9 +210,20 @@ export default function Chat() {
     // currently open on screen.
     const onMessage = (msg) => {
       const isActive = msg.conversationId === activeConversationIdRef.current;
+      // Decrypt right away (for anything text-like — plain text, stickers,
+      // GIF links — image messages manage their own decrypt-on-open flow
+      // in ImageBubble) and cache the plaintext on the stored message,
+      // rather than leaving it to MessageBubble's lazy per-render decrypt.
+      // Without this, a message received live this session never gets a
+      // `plaintext` in state — which is fine for just displaying it, but
+      // meant a reply quoting it (or its own sidebar preview) had nothing
+      // to show until the page reloaded and re-fetched history.
+      const plaintext = msg.kind !== 'image'
+        ? decryptText(msg.ciphertext, msg.nonce, msg.senderPubKey, keyPairRef.current.secretKey)
+        : undefined;
       setMessagesByConv((prev) => ({
         ...prev,
-        [msg.conversationId]: [...(prev[msg.conversationId] || []), { ...msg, incoming: true }],
+        [msg.conversationId]: [...(prev[msg.conversationId] || []), { ...msg, plaintext, incoming: true }],
       }));
       setConversations((prev) => {
         const bumped = bumpConversation(prev, msg.conversationId, {
@@ -292,10 +324,46 @@ export default function Chat() {
     });
   }
 
+  // Smart auto-scroll: jump to the newest message when the user is already
+  // near the bottom (the normal case — sending, or reading live), but don't
+  // yank them away from wherever they've scrolled up to read older history.
+  // While away from the bottom, a "New messages" pill (below) offers a
+  // manual jump instead.
   useEffect(() => {
     if (historyLoading) return; // wait for bubbles to actually render before scrolling to them
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    const el = scrollRef.current;
+    if (!el) return;
+    if (nearBottomRef.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      setShowJumpToBottom(false);
+    } else {
+      setShowJumpToBottom(true);
+    }
   }, [activeMessages, historyLoading]);
+
+  // Opening a (possibly different) thread always starts pinned to its
+  // bottom, regardless of where the previous thread had been scrolled to.
+  useEffect(() => {
+    nearBottomRef.current = true;
+    setShowJumpToBottom(false);
+  }, [activeConversationId]);
+
+  function handleThreadScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distanceFromBottom < 120;
+    nearBottomRef.current = nearBottom;
+    if (nearBottom) setShowJumpToBottom(false);
+  }
+
+  function jumpToBottom() {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    nearBottomRef.current = true;
+    setShowJumpToBottom(false);
+  }
 
   async function fetchPartnerKeyWithRetry(pid, attempts = 6) {
     for (let i = 0; i < attempts; i++) {
@@ -610,6 +678,54 @@ export default function Chat() {
     sendImage(file, viewMode);
   }
 
+  // Stickers and GIFs both piggyback on the plain-text send path: the
+  // "text" being encrypted is just a sticker id or a GIF's CDN URL, and a
+  // distinct `kind` is what tells the sidebar/bubble how to render it
+  // instead of showing that raw payload. Same reply-target handling as a
+  // normal text send.
+  async function sendPayload(kind, payloadText) {
+    const partnerKey = partnerKeyByConv[activeConversationId];
+    if (!payloadText || !partnerKey || !activeConversationId) return;
+
+    const { ciphertext, nonce } = encryptText(payloadText, keyPairRef.current.secretKey, partnerKey);
+    const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
+    const replyTarget = replyingTo;
+    setReplyingTo(null);
+
+    try {
+      const { data } = await api.post('/messages/send', {
+        conversationId: activeConversationId,
+        ciphertext,
+        nonce,
+        senderPubKey,
+        kind,
+        replyToId: replyTarget?.id || null,
+      });
+      cacheSentPlaintext(data.messageId, payloadText);
+      const createdAt = new Date().toISOString();
+      setMessagesByConv((prev) => ({
+        ...prev,
+        [activeConversationId]: [...(prev[activeConversationId] || []), {
+          id: data.messageId, kind, plaintext: payloadText, replyToId: data.replyToId || null, incoming: false, createdAt,
+        }],
+      }));
+      setConversations((prev) => bumpConversation(prev, activeConversationId, {
+        id: data.messageId, kind, senderId: user.id, createdAt,
+      }));
+    } catch (err) {
+      console.error(err);
+      setReplyingTo(replyTarget);
+    }
+  }
+
+  function sendSticker(stickerId) {
+    sendPayload('sticker', stickerId);
+  }
+
+  function sendGif(url) {
+    sendPayload('gif', url);
+  }
+
   const friendsPanelProps = {
     user,
     activeConv,
@@ -633,8 +749,8 @@ export default function Chat() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <header className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6 sm:py-4 border-b border-slate-200 dark:border-white/5">
+    <div className="h-screen h-dvh flex flex-col overflow-hidden">
+      <header className="shrink-0 sticky top-0 z-20 bg-white dark:bg-ink-950 flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6 sm:py-4 border-b border-slate-200 dark:border-white/5">
         <div className="flex items-center gap-2">
           <button
             onClick={() => { setMobileSidebarTab('friends'); setSidebarOpen(true); }}
@@ -706,7 +822,11 @@ export default function Chat() {
             </div>
             <button onClick={() => setSidebarOpen(false)} className="text-slate-500 dark:text-slate-400 text-lg leading-none px-1" aria-label="Close">✕</button>
           </div>
-          <div className="flex-1 overflow-y-auto">
+          {/* min-h-0, not its own overflow-y-auto — each panel already
+              freezes its own header and only scrolls its own list (see
+              FriendsPanel/HistoryPanel below); scrolling the whole panel
+              here instead would carry that header away with it. */}
+          <div className="flex-1 min-h-0 overflow-hidden">
             {mobileSidebarTab === 'friends' ? <FriendsPanel {...friendsPanelProps} /> : <HistoryPanel {...historyPanelProps} />}
           </div>
         </aside>
@@ -729,7 +849,10 @@ export default function Chat() {
 
           {view === 'thread' && activeConv && (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              {/* Sticky within the thread column — like a spreadsheet's
+                  frozen header row, this stays put while the message list
+                  below scrolls, no matter how long the conversation gets. */}
+              <div className="shrink-0 sticky top-0 z-10 bg-white dark:bg-ink-950 flex flex-wrap items-center justify-between gap-2 pb-2">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="chip bg-mint-500/10 border-mint-500/30 text-mint-400">
                     {activeConv.partnerDisplayName} · end-to-end encrypted
@@ -760,7 +883,19 @@ export default function Chat() {
                 </div>
               </div>
 
-              <div ref={scrollRef} className="flex-1 overflow-y-auto card p-3 sm:p-4 space-y-3 min-h-[50vh]">
+              {/* min-h-0 (not a min-height like 50vh) is what actually lets
+                  this flex child shrink to fit the space left over by the
+                  frozen header/composer above and below it, instead of
+                  forcing the whole page to grow and scroll as a unit. The
+                  wrapping relative/absolute pair lets the "New messages"
+                  pill float over the scroll area without being clipped or
+                  scrolling away with it. */}
+              <div className="relative flex-1 min-h-0">
+              <div
+                ref={scrollRef}
+                onScroll={handleThreadScroll}
+                className="absolute inset-0 overflow-y-auto card p-3 sm:p-4 space-y-3"
+              >
                 {historyLoading && <p className="text-center text-sm text-slate-500 mt-10">Loading…</p>}
                 {!historyLoading && activeMessages.map((m, i) => {
                   if (m.kind === 'system') {
@@ -802,15 +937,25 @@ export default function Chat() {
                   <p className="text-center text-sm text-slate-500 mt-10">Say hi 👋 — this conversation is end-to-end encrypted.</p>
                 )}
               </div>
+              {showJumpToBottom && (
+                <button
+                  type="button"
+                  onClick={jumpToBottom}
+                  className="absolute bottom-3 left-1/2 -translate-x-1/2 chip bg-violet-600 border-violet-500 text-white shadow-lg hover:bg-violet-500"
+                >
+                  ↓ New messages
+                </button>
+              )}
+              </div>
 
               {replyingTo && (
-                <div className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 bg-slate-100 dark:bg-white/5 border-l-2 border-violet-400 text-xs">
+                <div className="shrink-0 flex items-center justify-between gap-2 rounded-lg px-3 py-2 bg-slate-100 dark:bg-white/5 border-l-2 border-violet-400 text-xs">
                   <div className="min-w-0">
                     <p className="text-slate-400 dark:text-slate-500">
                       Replying to {replyingTo.incoming ? (activeConv.partnerDisplayName || 'Anonymous') : 'yourself'}
                     </p>
                     <p className="truncate text-slate-600 dark:text-slate-300">
-                      {replyingTo.kind === 'image' ? '📷 Photo' : (replyingTo.plaintext ?? '…')}
+                      {replyPreviewLabel(replyingTo)}
                     </p>
                   </div>
                   <button type="button" onClick={() => setReplyingTo(null)} className="text-slate-400 hover:text-coral-500 px-1 shrink-0" aria-label="Cancel reply">
@@ -819,7 +964,7 @@ export default function Chat() {
                 </div>
               )}
 
-              <form onSubmit={sendText} className="flex gap-2">
+              <form onSubmit={sendText} className="shrink-0 flex gap-2">
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -830,6 +975,8 @@ export default function Chat() {
                 </button>
                 <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onPickImage} />
                 <EmojiPicker onSelect={(emoji) => setDraft((d) => `${d}${emoji}`)} />
+                <StickerPicker onSelect={sendSticker} />
+                <GifPicker onSelect={sendGif} />
                 <input
                   className="input flex-1 min-w-0"
                   placeholder="Type a message… try :) or :fire:"
@@ -1028,7 +1175,7 @@ function FriendsPanel({ user, activeConv, view, incomingRequests, friends, frien
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-3">
+      <div className="flex-1 min-h-0 overflow-y-auto p-3">
         <p className="text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-1.5 px-1">Friends</p>
         {friends.length === 0 && (
           <p className="text-xs text-slate-500 dark:text-slate-400 px-1 py-2">
@@ -1085,7 +1232,7 @@ function HistoryPanel({ conversations, activeConversationId, view, onNewChat, on
       <div className="p-3">
         <button onClick={onNewChat} className="btn-primary w-full !py-2 text-sm">+ New chat</button>
       </div>
-      <div className="flex-1 overflow-y-auto px-2 pb-3 space-y-1">
+      <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3 space-y-1">
         {conversations.length === 0 && (
           <p className="text-xs text-slate-500 dark:text-slate-400 px-2 py-4 text-center">No chats yet — start one!</p>
         )}
@@ -1116,8 +1263,16 @@ function HistoryPanel({ conversations, activeConversationId, view, onNewChat, on
 function ConversationPreviewText({ conv, myUserId, keyPair }) {
   const last = conv.lastMessage;
   if (!last) return 'Say hi 👋';
-  if (last.kind === 'image') return (last.senderId === myUserId ? 'You: 📷 Photo' : '📷 Photo');
-  if (last.senderId === myUserId) {
+  const mine = last.senderId === myUserId;
+  if (last.kind === 'image') return mine ? 'You: 📷 Photo' : '📷 Photo';
+  if (last.kind === 'sticker') {
+    const id = mine ? getCachedSentPlaintext(last.id) : (keyPair ? decryptText(last.ciphertext, last.nonce, last.senderPubKey, keyPair.secretKey) : null);
+    const s = id ? stickerById(id) : null;
+    const label = s ? `${s.emoji} Sticker` : '🏷️ Sticker';
+    return mine ? `You: ${label}` : label;
+  }
+  if (last.kind === 'gif') return mine ? 'You: 🎞️ GIF' : '🎞️ GIF';
+  if (mine) {
     const cached = getCachedSentPlaintext(last.id);
     return cached ? `You: ${cached}` : 'You: (sent)';
   }
@@ -1133,17 +1288,19 @@ function MessageBubble({
   const isMine = !message.incoming;
   let text = message.plaintext;
 
-  if (message.incoming && message.kind === 'text' && text === undefined) {
+  // Text, stickers and GIFs are all "ciphertext that decrypts to a string"
+  // (a sentence, a sticker id, or a GIF URL respectively) — only images
+  // manage their own separate decrypt-on-open flow in ImageBubble.
+  if (message.incoming && message.kind !== 'image' && text === undefined) {
     text = decryptText(message.ciphertext, message.nonce, message.senderPubKey, keyPair.secretKey);
   }
-  if (message.kind === 'text' && (text === null || text === undefined)) {
+  const decryptFailed = message.kind !== 'image' && (text === null || text === undefined);
+  if (decryptFailed) {
     text = isMine ? '🔒 Sent message (unavailable on this device)' : '⚠️ Could not decrypt';
   }
 
-  let repliedPreview = null;
-  if (repliedTo) {
-    repliedPreview = repliedTo.kind === 'image' ? '📷 Photo' : (repliedTo.plaintext ?? '…');
-  }
+  const sticker = message.kind === 'sticker' && !decryptFailed ? stickerById(text) : null;
+  const repliedPreview = repliedTo ? replyPreviewLabel(repliedTo) : null;
 
   return (
     <div className={`group flex flex-col ${isMine ? 'items-end' : 'items-start'}`}>
@@ -1184,6 +1341,13 @@ function MessageBubble({
             </div>
           ) : message.kind === 'image' ? (
             <ImageBubble message={message} keyPair={keyPair} isMine={isMine} />
+          ) : message.kind === 'sticker' && !decryptFailed ? (
+            <div className="flex flex-col items-center gap-0.5 px-2 py-1" title={sticker?.label}>
+              <span className="text-6xl leading-none">{sticker?.emoji || '❓'}</span>
+              {sticker?.label && <span className="text-[11px] text-slate-400 dark:text-slate-500">{sticker.label}</span>}
+            </div>
+          ) : message.kind === 'gif' && !decryptFailed ? (
+            <img src={text} alt="GIF" loading="lazy" className="rounded-xl max-h-64 max-w-full bg-slate-100 dark:bg-ink-800" />
           ) : (
             <div className={`rounded-2xl px-4 py-2 text-sm ${isMine ? 'bg-brand-gradient text-white' : 'bg-slate-100 dark:bg-ink-800 text-slate-900 dark:text-slate-100'}`}>
               {text}
