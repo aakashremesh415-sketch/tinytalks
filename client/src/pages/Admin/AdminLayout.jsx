@@ -1,6 +1,7 @@
-import { NavLink, Outlet, useNavigate, Link } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import Logo from '../../components/Logo.jsx';
 import ThemeToggle from '../../components/ThemeToggle.jsx';
+import ViewToggle from '../../components/ViewToggle.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { useSeo } from '../../lib/seo.js';
 
@@ -21,9 +22,17 @@ export default function AdminLayout() {
     <div className="min-h-screen flex flex-col md:flex-row">
       {/* Desktop sidebar */}
       <aside className="hidden md:flex w-64 shrink-0 border-r border-slate-200 dark:border-white/5 p-6 flex-col">
-        <div className="flex items-center justify-between">
+        {/* Stacked, not a justify-between row — the wordmark logo and the
+            theme+view toggle group together run wider than this 256px
+            sidebar's ~208px content width (p-6 padding on both sides), so
+            side by side they'd overflow/clip. Each fits comfortably on its
+            own line. */}
+        <div className="space-y-3">
           <Logo size={30} />
-          <ThemeToggle />
+          <div className="flex items-center gap-3">
+            <ThemeToggle />
+            <ViewToggle active="admin" />
+          </div>
         </div>
         <nav className="mt-8 space-y-1">
           {NAV.map((item) => (
@@ -41,9 +50,6 @@ export default function AdminLayout() {
             </NavLink>
           ))}
         </nav>
-        <Link to="/chat" className="mt-auto text-sm text-violet-400 hover:underline">
-          ← Normal view
-        </Link>
         <button
           onClick={() => { logout(); navigate('/'); }}
           className="mt-3 text-sm text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 text-left"
@@ -58,9 +64,7 @@ export default function AdminLayout() {
           <Logo size={26} />
           <div className="flex items-center gap-3">
             <ThemeToggle />
-            <Link to="/chat" className="text-xs font-semibold text-violet-400 hover:underline whitespace-nowrap">
-              Normal view
-            </Link>
+            <ViewToggle active="admin" />
             <button
               onClick={() => { logout(); navigate('/'); }}
               className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap"

@@ -64,9 +64,10 @@ export default function Verify() {
     try {
       const fd = new FormData();
       fd.append('selfie', selfie);
-      const { data } = await api.post('/verification/age-estimation', fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      // No explicit Content-Type — see the same fix in VerifyGender.jsx /
+      // Settings.jsx / Chat.jsx: a hand-set 'multipart/form-data' header has
+      // no boundary, so let the browser set it for a FormData body.
+      const { data } = await api.post('/verification/age-estimation', fd);
       if (data.passed) {
         setAgeMsg('Age verification passed.');
       } else {

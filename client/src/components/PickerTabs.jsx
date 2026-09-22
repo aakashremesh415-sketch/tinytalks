@@ -207,9 +207,12 @@ function GifTab({ onSelect }) {
     setLoading(true);
     const delay = query.trim() ? 350 : 0;
     const handle = setTimeout(() => {
+      // 10s client-side timeout too, on top of the server's own timeout on
+      // its call out to Giphy — belt and suspenders so this tab can't get
+      // stuck on "Loading…" no matter which leg of the round trip stalls.
       const req = query.trim()
-        ? api.get('/gifs/search', { params: { q: query.trim() } })
-        : api.get('/gifs/trending');
+        ? api.get('/gifs/search', { params: { q: query.trim() }, timeout: 10000 })
+        : api.get('/gifs/trending', { timeout: 10000 });
       req
         .then(({ data }) => setGifs(data.gifs || []))
         .catch(() => setGifs([]))

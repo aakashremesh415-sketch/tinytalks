@@ -8,6 +8,7 @@ import { stickerById } from '../components/StickerPicker.jsx';
 import PickerTabs from '../components/PickerTabs.jsx';
 import VoiceRecorder from '../components/VoiceRecorder.jsx';
 import VoiceNoteBubble from '../components/VoiceNoteBubble.jsx';
+import ViewToggle from '../components/ViewToggle.jsx';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useRealtime } from '../lib/realtime.jsx';
@@ -124,6 +125,18 @@ function decodeHistoryMessage(m, myUserId, keyPair) {
   return { id: m.id, kind: m.kind, plaintext: text, replyToId: m.replyToId || null, editedAt: m.editedAt || null, incoming: true, createdAt: m.createdAt };
 }
 
+// A failed send used to only ever show up in the browser console — from
+// the sender's side, the message just silently vanished back into the
+// draft box with no explanation. This gives the visible banner above the
+// composer something concrete to say instead of a generic "something went
+// wrong".
+function describeSendError(err) {
+  if (err?.message === 'No recipient devices available yet.') {
+    return "Couldn't reach the other person's device yet — try again in a moment.";
+  }
+  return "Couldn't send that — please try again.";
+}
+
 function formatMessageTime(iso) {
   if (!iso) return '';
   try {
@@ -185,6 +198,10 @@ export default function Chat() {
   const [reportOpen, setReportOpen] = useState(false);
   const [imageVerifiedNotice, setImageVerifiedNotice] = useState(false);
   const [blockBusy, setBlockBusy] = useState(false);
+  // A failed send/edit used to just log to the console and silently
+  // restore the draft — which reads as "my message vanished for no
+  // reason" from the user's side. This surfaces it instead.
+  const [sendError, setSendError] = useState(null);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
   const nearBottomRef = useRef(true); // whether the thread is scrolled near its bottom right now
@@ -438,6 +455,7 @@ export default function Chat() {
   useEffect(() => {
     nearBottomRef.current = true;
     setShowJumpToBottom(false);
+    setSendError(null);
   }, [activeConversationId]);
 
   function handleThreadScroll() {
@@ -659,6 +677,7 @@ export default function Chat() {
     const replyTarget = replyingTo;
     setDraft('');
     setReplyingTo(null);
+    setSendError(null);
 
     try {
       const targets = await fetchSendTargets(activeConv.partnerId, user.id, getOrCreateDeviceId());
@@ -684,6 +703,7 @@ export default function Chat() {
       }));
     } catch (err) {
       console.error(err);
+      setSendError(describeSendError(err));
       setDraft(text); // don't lose the draft on a failed send
       setReplyingTo(replyTarget); // ...or the reply target it was attached to
     }
@@ -704,6 +724,7 @@ export default function Chat() {
     if (!text || !activeConv) return;
 
     const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
+    setSendError(null);
 
     try {
       const targets = await fetchSendTargets(activeConv.partnerId, user.id, getOrCreateDeviceId());
@@ -721,6 +742,7 @@ export default function Chat() {
       setEditDraft('');
     } catch (err) {
       console.error(err);
+      setSendError(describeSendError(err));
       // leave the edit box open with its draft intact so nothing is lost
     }
   }
@@ -739,7 +761,13 @@ export default function Chat() {
     fd.append('senderPubKey', senderPubKey);
     fd.append('viewMode', viewMode);
 
-    const { data } = await api.post('/images', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+    // No explicit Content-Type here — axios/the browser needs to set it
+    // itself for a FormData body, since it has to include a `boundary=...`
+    // parameter the multipart body is actually delimited with. Setting
+    // 'multipart/form-data' by hand (as this used to) sends that header
+    // with no boundary, which made the server's multer/busboy parser
+    // throw on every request — every upload in the app had this bug.
+    const { data } = await api.post('/images', fd);
     const createdAt = new Date().toISOString();
 
     setMessagesByConv((prev) => ({
@@ -795,7 +823,9 @@ export default function Chat() {
     fd.append('durationSec', String(durationSec));
 
     try {
-      const { data } = await api.post('/voice-notes', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      // See the matching comment in sendImage above — no explicit
+      // Content-Type for a FormData body.
+      const { data } = await api.post('/voice-notes', fd);
       const createdAt = new Date().toISOString();
       setMessagesByConv((prev) => ({
         ...prev,
@@ -842,6 +872,7 @@ export default function Chat() {
     const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
     const replyTarget = replyingTo;
     setReplyingTo(null);
+    setSendError(null);
 
     try {
       const targets = await fetchSendTargets(activeConv.partnerId, user.id, getOrCreateDeviceId());
@@ -867,6 +898,7 @@ export default function Chat() {
       }));
     } catch (err) {
       console.error(err);
+      setSendError(describeSendError(err));
       setReplyingTo(replyTarget);
     }
   }
@@ -925,11 +957,6 @@ export default function Chat() {
           <Logo size={28} />
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-          {isAdmin && (
-            <Link to="/admin" className="chip bg-violet-500/10 border-violet-500/30 text-violet-300 hover:bg-violet-500/20">
-              Admin view
-            </Link>
-          )}
           {user?.accountType === 'GUEST' && (
             <span className="chip bg-coral-500/10 border-coral-500/30 text-coral-400">Guest · 2 days</span>
           )}
@@ -947,6 +974,7 @@ export default function Chat() {
             ⚙ Settings
           </Link>
           <ThemeToggle />
+          {isAdmin && <ViewToggle active="chat" />}
           <button onClick={() => { logout(); navigate('/'); }} className="text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white">
             Log out
           </button>
@@ -1101,6 +1129,15 @@ export default function Chat() {
                 </button>
               )}
               </div>
+
+              {sendError && (
+                <div className="shrink-0 flex items-center justify-between gap-2 rounded-lg px-3 py-2 bg-coral-500/10 border-l-2 border-coral-500 text-xs text-coral-500 dark:text-coral-400">
+                  <span>⚠️ {sendError}</span>
+                  <button type="button" onClick={() => setSendError(null)} className="text-coral-500 hover:text-coral-600 px-1 shrink-0" aria-label="Dismiss">
+                    ✕
+                  </button>
+                </div>
+              )}
 
               {replyingTo && (
                 <div className="shrink-0 flex items-center justify-between gap-2 rounded-lg px-3 py-2 bg-slate-100 dark:bg-white/5 border-l-2 border-violet-400 text-xs">

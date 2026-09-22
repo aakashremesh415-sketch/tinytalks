@@ -26,12 +26,28 @@ function shape(results) {
 // Both routes fail soft (empty list, 200) rather than surfacing a 500 to
 // the composer over a flaky third-party API or an exhausted shared key —
 // sending a GIF just becomes unavailable for a moment, same as if the
-// picker had no results.
-router.get('/trending', requireAuth, asyncHandler(async (req, res) => {
+// picker had no results. Each fetch to Giphy carries its own timeout (same
+// AbortController pattern as lookupIpLocation in middleware/auth.js) —
+// without one, a slow or unresponsive Giphy call had nothing forcing it to
+// fail, so the request (and the picker's "Loading…" state) could hang far
+// longer than anyone would wait, all the way out to Vercel's function
+// timeout instead of failing fast into the normal empty-results state.
+async function fetchGiphy(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
   try {
-    const r = await fetch(`${GIPHY_BASE}/trending?api_key=${GIPHY_KEY}&limit=24&rating=pg-13`);
+    const r = await fetch(url, { signal: controller.signal });
     const data = await r.json();
     if (!r.ok) throw new Error(data?.meta?.msg || `Giphy responded ${r.status}`);
+    return data;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+router.get('/trending', requireAuth, asyncHandler(async (req, res) => {
+  try {
+    const data = await fetchGiphy(`${GIPHY_BASE}/trending?api_key=${GIPHY_KEY}&limit=24&rating=pg-13`);
     res.json({ gifs: shape(data.data) });
   } catch (err) {
     console.error('[gifs] trending fetch failed (continuing):', err.message);
@@ -43,9 +59,7 @@ router.get('/search', requireAuth, asyncHandler(async (req, res) => {
   const q = (req.query.q || '').toString().trim().slice(0, 100);
   if (!q) return res.json({ gifs: [] });
   try {
-    const r = await fetch(`${GIPHY_BASE}/search?api_key=${GIPHY_KEY}&q=${encodeURIComponent(q)}&limit=24&rating=pg-13`);
-    const data = await r.json();
-    if (!r.ok) throw new Error(data?.meta?.msg || `Giphy responded ${r.status}`);
+    const data = await fetchGiphy(`${GIPHY_BASE}/search?api_key=${GIPHY_KEY}&q=${encodeURIComponent(q)}&limit=24&rating=pg-13`);
     res.json({ gifs: shape(data.data) });
   } catch (err) {
     console.error('[gifs] search fetch failed (continuing):', err.message);

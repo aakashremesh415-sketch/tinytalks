@@ -33,9 +33,11 @@ export default function VerifyGender() {
     try {
       const fd = new FormData();
       fd.append('genderPhoto', photo);
-      await api.post('/auth/gender-photo', fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      // No explicit Content-Type — the browser needs to set this itself for
+      // a FormData body so it can include the multipart boundary; a
+      // hand-set 'multipart/form-data' header has no boundary and makes
+      // the server's parser fail on every request.
+      await api.post('/auth/gender-photo', fd);
       setSubmitted(true);
       await refreshMe();
     } catch (e2) {
