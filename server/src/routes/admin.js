@@ -79,21 +79,32 @@ router.get('/users', asyncHandler(async (req, res) => {
   const q = (req.query.query || '').trim();
   if (!q) return res.json({ users: [] });
 
-  const users = await prisma.user.findMany({
-    where: {
-      OR: [
-        { email: { contains: q } },
-        { displayName: { contains: q } },
-      ],
-    },
-    select: {
-      id: true, email: true, displayName: true, accountType: true,
-      genderVerification: true, banned: true, banReason: true, createdAt: true,
-      lastSeenAt: true, lastIp: true, lastLocation: true,
-    },
-    take: 20,
-  });
-  res.json({ users });
+  try {
+    const users = await prisma.user.findMany({
+      where: {
+        OR: [
+          { email: { contains: q } },
+          { displayName: { contains: q } },
+        ],
+      },
+      select: {
+        id: true, email: true, displayName: true, accountType: true,
+        genderVerification: true, banned: true, banReason: true, createdAt: true,
+        lastSeenAt: true, lastIp: true, lastLocation: true,
+      },
+      take: 20,
+    });
+    res.json({ users });
+  } catch (err) {
+    // Surfaces the real Prisma/DB error instead of the generic 500 the
+    // global handler in app.js would otherwise return — this query is the
+    // one place a schema mismatch (a column this app expects but the
+    // connected database doesn't have) would actually show up, so this is
+    // meant to be a one-time diagnostic, not a permanent pattern to copy
+    // to every route.
+    console.error('[admin] user search failed:', err);
+    res.status(500).json({ error: `User search failed: ${err.message}` });
+  }
 }));
 
 // --- Full, paginated user directory (distinct from the search box above,
@@ -104,27 +115,35 @@ router.get('/users/list', asyncHandler(async (req, res) => {
   const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
   const pageSize = Math.min(100, Math.max(1, Number.parseInt(req.query.pageSize, 10) || 25));
 
-  const [users, total, activeUsers] = await Promise.all([
-    prisma.user.findMany({
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-      select: {
-        id: true, email: true, displayName: true, accountType: true,
-        genderVerification: true, banned: true, banReason: true, createdAt: true,
-        lastSeenAt: true, lastIp: true, lastLocation: true,
-      },
-    }),
-    prisma.user.count(),
-    // "Active" means seen within the same window requireAuth uses to decide
-    // whether to bother re-stamping lastSeenAt at all (see
-    // middleware/auth.js's ACTIVITY_THROTTLE_MS) — a rough "online right
-    // now or in roughly the last few minutes" measure, not a precise
-    // concurrent-session count.
-    prisma.user.count({ where: { lastSeenAt: { gte: new Date(Date.now() - 5 * 60 * 1000) } } }),
-  ]);
+  try {
+    const [users, total, activeUsers] = await Promise.all([
+      prisma.user.findMany({
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true, email: true, displayName: true, accountType: true,
+          genderVerification: true, banned: true, banReason: true, createdAt: true,
+          lastSeenAt: true, lastIp: true, lastLocation: true,
+        },
+      }),
+      prisma.user.count(),
+      // "Active" means seen within the same window requireAuth uses to decide
+      // whether to bother re-stamping lastSeenAt at all (see
+      // middleware/auth.js's ACTIVITY_THROTTLE_MS) — a rough "online right
+      // now or in roughly the last few minutes" measure, not a precise
+      // concurrent-session count.
+      prisma.user.count({ where: { lastSeenAt: { gte: new Date(Date.now() - 5 * 60 * 1000) } } }),
+    ]);
 
-  res.json({ users, total, page, pageSize, activeUsers });
+    res.json({ users, total, page, pageSize, activeUsers });
+  } catch (err) {
+    // Same reasoning as the /users catch above — this is the route that's
+    // actually been failing (see AdminUsers.jsx), and the generic global
+    // handler was hiding why.
+    console.error('[admin] user directory load failed:', err);
+    res.status(500).json({ error: `Could not load the user directory: ${err.message}` });
+  }
 }));
 
 // --- Per-user IP history (see the IpLog model comment in schema.prisma —
