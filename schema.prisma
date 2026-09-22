@@ -65,57 +65,57 @@ enum FriendStatus {
 }
 
 model User {
-  id           String      @id @default(uuid())
-  accountType  AccountType @default(GUEST)
-  email        String?     @unique
-  passwordHash String?
-  displayName  String?
+  id                   String              @id @default(uuid())
+  accountType          AccountType         @default(GUEST)
+  email                String?             @unique
+  passwordHash         String?
+  displayName          String?
 
-  ageConfirmed   Boolean   @default(false) // self-attested 18+ checkbox, required for ALL accounts
-  ageConfirmedAt DateTime?
+  ageConfirmed         Boolean             @default(false) // self-attested 18+ checkbox, required for ALL accounts
+  ageConfirmedAt       DateTime?
 
-  genderClaimed      GenderClaim        @default(UNSPECIFIED)
-  genderPhotoPath    String? // selfie submitted for admin gender review
-  genderVerification VerificationStatus @default(NONE)
-  genderReviewedBy   String?
-  genderReviewedAt   DateTime?
+  genderClaimed        GenderClaim         @default(UNSPECIFIED)
+  genderPhotoPath      String?             // selfie submitted for admin gender review
+  genderVerification   VerificationStatus  @default(NONE)
+  genderReviewedBy     String?
+  genderReviewedAt     DateTime?
 
   // "image-verified" flag — required before ANY account (guest or regular)
   // can send/receive images. Requires BOTH email OTP success AND a passed
   // facial age-estimation check (see lib/ageEstimation.js). No government
   // ID is ever collected or stored for this.
-  otpVerified         Boolean   @default(false)
-  ageEstimationPassed Boolean   @default(false)
-  ageEstimationScore  Float? // vendor confidence, informational only
-  imageVerifiedAt     DateTime?
+  otpVerified          Boolean             @default(false)
+  ageEstimationPassed  Boolean             @default(false)
+  ageEstimationScore   Float?              // vendor confidence, informational only
+  imageVerifiedAt      DateTime?
 
-  premiumGenderFilter Boolean @default(false)
+  premiumGenderFilter  Boolean             @default(false)
 
   // Self-reported location tags (town/district/state, e.g. "Trivandrum",
   // "Kerala") used to prefer nearby matches in the queue — never derived
   // from IP/GPS, since this app deliberately collects no such data.
-  locationTags     String[] @default([])
+  locationTags         String[]            @default([])
   // Self-reported general interests (topics, hobbies) — same matching
   // treatment as locationTags: a soft preference, never a hard filter.
-  interests        String[] @default([])
+  interests            String[]            @default([])
   // When true, accepted friends can no longer see this user's interests
   // via GET /friends (see routes/friends.js shape()) — interests are
   // still used for queue matching either way, since matching is
   // server-side and never exposes them to the other party directly.
   // Default false: visible to friends unless the user opts out.
-  interestsPrivate Boolean  @default(false)
+  interestsPrivate     Boolean             @default(false)
 
   avatarUrl               String?
   // Rolling 24h rate limits on profile edits (mirrors the "N changes left
   // today" pattern common to social apps) — see lib/dailyLimit.js.
-  avatarChangeCount       Int       @default(0)
+  avatarChangeCount       Int               @default(0)
   avatarChangeWindowStart DateTime?
-  nameChangeCount         Int       @default(0)
+  nameChangeCount         Int               @default(0)
   nameChangeWindowStart   DateTime?
 
-  banned    Boolean   @default(false)
-  bannedAt  DateTime?
-  banReason String?
+  banned               Boolean             @default(false)
+  bannedAt             DateTime?
+  banReason            String?
 
   // Admin-only activity tracking (see server/src/middleware/auth.js and
   // routes/admin.js) — NOT used for matching or shown to other users, only
@@ -123,24 +123,24 @@ model User {
   // log. lastIp/lastSeenAt are a cheap denormalized "most recent" pair,
   // throttled to update at most every few minutes per user; the full
   // history of distinct IPs seen lives in IpLog below.
-  lastIp     String?
-  lastSeenAt DateTime?
+  lastIp               String?
+  lastSeenAt           DateTime?
 
-  createdAt DateTime  @default(now())
-  expiresAt DateTime? // set for GUEST accounts (createdAt + 2 days)
+  createdAt            DateTime            @default(now())
+  expiresAt            DateTime?           // set for GUEST accounts (createdAt + 2 days)
 
-  sentMessages           Message[]      @relation("SentMessages")
-  conversationsA         Conversation[] @relation("ParticipantA")
-  conversationsB         Conversation[] @relation("ParticipantB")
-  reportsFiled           Report[]       @relation("ReportsFiled")
-  reportsAgainst         Report[]       @relation("ReportsAgainst")
-  otpCodes               OtpCode[]
-  publicKeys             PublicKey[]
-  blocksMade             BlockedUser[]  @relation("BlockerRel")
-  blocksReceived         BlockedUser[]  @relation("BlockedRel")
-  friendRequestsSent     Friendship[]   @relation("FriendRequester")
-  friendRequestsReceived Friendship[]   @relation("FriendAddressee")
-  ipLogs                 IpLog[]
+  sentMessages         Message[]           @relation("SentMessages")
+  conversationsA        Conversation[]     @relation("ParticipantA")
+  conversationsB        Conversation[]     @relation("ParticipantB")
+  reportsFiled         Report[]            @relation("ReportsFiled")
+  reportsAgainst       Report[]            @relation("ReportsAgainst")
+  otpCodes             OtpCode[]
+  publicKeys           PublicKey[]
+  blocksMade           BlockedUser[]       @relation("BlockerRel")
+  blocksReceived       BlockedUser[]       @relation("BlockedRel")
+  friendRequestsSent     Friendship[]      @relation("FriendRequester")
+  friendRequestsReceived Friendship[]      @relation("FriendAddressee")
+  ipLogs               IpLog[]
 
   @@index([expiresAt])
   @@index([imageVerifiedAt])
@@ -201,11 +201,11 @@ model BlockedUser {
 // Persists independently of User so that banning a guest still blocks
 // re-verification after the guest account (and its data) is purged.
 model BanRecord {
-  id             String          @id @default(uuid())
-  identifierHash String          @unique // sha256(normalized email or phone)
-  reason         String
-  category       TicketCategory?
-  createdAt      DateTime        @default(now())
+  id               String   @id @default(uuid())
+  identifierHash   String   @unique // sha256(normalized email or phone)
+  reason           String
+  category         TicketCategory?
+  createdAt        DateTime @default(now())
 
   @@index([identifierHash])
 }
@@ -215,28 +215,28 @@ model BanRecord {
 // matching queue that used to be an in-memory array now lives here.
 // api/routes/queue.js reads/writes this table transactionally.
 model WaitingQueueEntry {
-  id            String      @id @default(uuid())
-  userId        String      @unique
+  id            String       @id @default(uuid())
+  userId        String       @unique
   genderClaimed GenderClaim
-  desiredGender String? // 'ANY' | a GenderClaim value | null
-  canFilter     Boolean     @default(false)
-  locationTags  String[]    @default([]) // denormalized copy of User.locationTags at join time
-  interests     String[]    @default([]) // denormalized copy of User.interests at join time
-  createdAt     DateTime    @default(now())
+  desiredGender String?      // 'ANY' | a GenderClaim value | null
+  canFilter     Boolean      @default(false)
+  locationTags  String[]     @default([]) // denormalized copy of User.locationTags at join time
+  interests     String[]     @default([]) // denormalized copy of User.interests at join time
+  createdAt     DateTime     @default(now())
 
   @@index([createdAt])
 }
 
 model OtpCode {
-  id         String    @id @default(uuid())
-  userId     String
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  codeHash   String // never store the raw code
-  purpose    String    @default("image_verification") // or "login"
-  expiresAt  DateTime
-  consumedAt DateTime?
-  attempts   Int       @default(0)
-  createdAt  DateTime  @default(now())
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash    String   // never store the raw code
+  purpose     String   @default("image_verification") // or "login"
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  attempts    Int      @default(0)
+  createdAt   DateTime @default(now())
 
   @@index([userId, purpose])
 }
@@ -244,10 +244,10 @@ model OtpCode {
 // Client-generated X25519 public keys for E2E encryption (nacl.box).
 // Private keys NEVER leave the client / are never sent to the server.
 model PublicKey {
-  id        String @id @default(uuid())
+  id        String   @id @default(uuid())
   userId    String
-  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  publicKey String // base64
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicKey String   // base64
 
   // Stable per-browser id (generated once client-side, kept in
   // localStorage — see client/src/lib/crypto.js's getOrCreateDeviceId)
@@ -260,7 +260,11 @@ model PublicKey {
   // encrypt a copy for.
   deviceId  String?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // @default(now()) alongside @updatedAt is what lets this migrate cleanly
+  // onto the 47 existing rows from before this column existed (Prisma
+  // needs a value to backfill them with) — it still auto-updates on every
+  // write from here on, exactly like a plain @updatedAt would.
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@unique([userId, deviceId])
   @@index([userId])
@@ -275,8 +279,8 @@ model Conversation {
   createdAt      DateTime  @default(now())
   endedAt        DateTime?
 
-  messages Message[]
-  reports  Report[]
+  messages       Message[]
+  reports        Report[]
 
   @@index([participantAId])
   @@index([participantBId])
@@ -296,14 +300,14 @@ model Message {
   // PER DEVICE in `copies` below instead of a single shared one here. Kept
   // (rather than dropped) so messages sent before that migration remain
   // readable by whichever single device originally received them.
-  ciphertext   String
-  nonce        String
+  ciphertext     String
+  nonce          String
   // The SENDING device's public key. Every MessageCopy below was
   // encrypted from that same sending device to a different target
   // device's public key, so any recipient decrypts their own copy with
   // nacl.box.open(copy.ciphertext, copy.nonce, senderPubKey, myOwnSecretKey)
   // — one shared field here regardless of how many copies exist.
-  senderPubKey String
+  senderPubKey   String
 
   // One row per device (the recipient's, AND the sender's own other
   // devices) this message was fanned out to — see routes/messages.js
@@ -312,18 +316,18 @@ model Message {
   // instead of relying on one universal ciphertext only one device holds
   // the key for. Not used for image messages (still single-device only —
   // self-destruct/view-once semantics get a lot messier per-device).
-  copies MessageCopy[]
+  copies         MessageCopy[]
 
   // Set when the sender edits a text message (see PATCH /messages/:id).
   // Editing re-encrypts client-side and simply overwrites
   // ciphertext/nonce/senderPubKey above with the new payload — the server
   // never sees plaintext either way — and stamps this so both sides can
   // show an "edited" hint without needing a separate edit-history table.
-  editedAt DateTime?
+  editedAt       DateTime?
 
-  kind      String     @default("text") // "text" | "image" | "sticker" | "gif" | "voice"
-  image     Image?
-  voiceNote VoiceNote?
+  kind           String       @default("text") // "text" | "image" | "sticker" | "gif" | "voice"
+  image          Image?
+  voiceNote      VoiceNote?
 
   // Optional "reply to" reference for the quote-reply feature. Nullable
   // and onDelete: SetNull (rather than Cascade) so deleting the original
@@ -334,11 +338,11 @@ model Message {
   // (it's just another message in the same conversation it already
   // decrypted), so it looks the quote up locally by this id instead of
   // duplicating encrypted content.
-  replyToId String?
-  replyTo   Message?  @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
-  replies   Message[] @relation("MessageReplies")
+  replyToId      String?
+  replyTo        Message?     @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]    @relation("MessageReplies")
 
-  createdAt DateTime @default(now())
+  createdAt      DateTime     @default(now())
 
   @@index([conversationId])
   @@index([replyToId])
@@ -364,23 +368,23 @@ model MessageCopy {
 }
 
 model Image {
-  id        String  @id @default(uuid())
-  messageId String  @unique
-  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  id                String        @id @default(uuid())
+  messageId         String        @unique
+  message           Message       @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
   // The file itself is stored encrypted-at-rest is out of scope for this
   // MVP; the file on disk is the ciphertext blob the client encrypted
   // before upload (server cannot render it without the recipient's key).
-  storagePath String
-  viewMode    ImageViewMode
+  storagePath       String
+  viewMode          ImageViewMode
 
-  uploadedAt     DateTime  @default(now())
-  firstViewedAt  DateTime?
-  viewedComplete Boolean   @default(false) // true once the one-time/timed view has been consumed by the recipient
+  uploadedAt        DateTime      @default(now())
+  firstViewedAt     DateTime?
+  viewedComplete    Boolean       @default(false) // true once the one-time/timed view has been consumed by the recipient
 
-  deletedByUser     Boolean   @default(false) // true if the recipient/sender explicitly deleted it
-  deletedFromChatAt DateTime? // soft-delete: hidden from chat UI (set by user action, or by the retention cron at +2 days)
-  hardDeleteAt      DateTime? // when the file+row will be permanently removed (immediately on user delete, else uploadedAt + 7 days)
+  deletedByUser     Boolean       @default(false)  // true if the recipient/sender explicitly deleted it
+  deletedFromChatAt DateTime?     // soft-delete: hidden from chat UI (set by user action, or by the retention cron at +2 days)
+  hardDeleteAt      DateTime?     // when the file+row will be permanently removed (immediately on user delete, else uploadedAt + 7 days)
   hardDeletedAt     DateTime?
 
   @@index([deletedFromChatAt])
@@ -400,20 +404,20 @@ model Image {
 // cron sweep; hardDeleteAt is only a safety net for one that's never
 // listened to at all.
 model VoiceNote {
-  id        String  @id @default(uuid())
-  messageId String  @unique
-  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  id            String    @id @default(uuid())
+  messageId     String    @unique
+  message       Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
-  storagePath String // ciphertext blob in Vercel Blob, same as Image
-  durationSec Int? // best-effort, client-reported — just for the little duration label in the UI
+  storagePath   String        // ciphertext blob in Vercel Blob, same as Image
+  durationSec   Int?          // best-effort, client-reported — just for the little duration label in the UI
 
-  uploadedAt   DateTime @default(now())
+  uploadedAt    DateTime  @default(now())
   // No "listened" flag: the recipient listening deletes this row outright
   // (see routes/voiceNotes.js GET /:voiceNoteId/listen) — the Message it
   // belongs to just ends up with no VoiceNote attached any more, which is
   // how the client tells "played" apart from "still waiting". This field
   // is only a safety net for one that's never listened to at all.
-  hardDeleteAt DateTime // uploadedAt + 7 days, same window as images
+  hardDeleteAt  DateTime      // uploadedAt + 7 days, same window as images
 
   @@index([hardDeleteAt])
 }
@@ -430,23 +434,23 @@ model AdminImageAccessLog {
 }
 
 model Report {
-  id             String        @id @default(uuid())
-  reporterId     String
-  reporter       User          @relation("ReportsFiled", fields: [reporterId], references: [id], onDelete: Cascade)
-  reportedUserId String
-  reportedUser   User          @relation("ReportsAgainst", fields: [reportedUserId], references: [id], onDelete: Cascade)
-  conversationId String?
-  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  id               String         @id @default(uuid())
+  reporterId       String
+  reporter         User           @relation("ReportsFiled", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUserId   String
+  reportedUser     User           @relation("ReportsAgainst", fields: [reportedUserId], references: [id], onDelete: Cascade)
+  conversationId   String?
+  conversation     Conversation?  @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
-  category    TicketCategory
-  description String
-  status      TicketStatus   @default(OPEN)
+  category         TicketCategory
+  description      String
+  status           TicketStatus   @default(OPEN)
 
-  assignedAdminId String?
-  resolutionNote  String?
+  assignedAdminId  String?
+  resolutionNote   String?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
 
   @@index([status])
   @@index([reportedUserId])
