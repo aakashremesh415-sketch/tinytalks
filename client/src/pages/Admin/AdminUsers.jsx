@@ -34,6 +34,13 @@ export default function AdminUsers() {
   const [ipLog, setIpLog] = useState([]);
   const [ipLogLoading, setIpLogLoading] = useState(false);
 
+  // Surfaced on a failed directory/search load — previously these just
+  // failed silently (no catch), which left the page showing "No users
+  // yet." with a 0 count indistinguishable from an actually-empty database
+  // instead of a real error (e.g. a query referencing a column that isn't
+  // migrated onto this database yet).
+  const [loadError, setLoadError] = useState('');
+
   useEffect(() => {
     loadDirectory(page);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -41,11 +48,15 @@ export default function AdminUsers() {
 
   async function loadDirectory(p) {
     setLoadingDirectory(true);
+    setLoadError('');
     try {
       const { data } = await api.get('/admin/users/list', { params: { page: p, pageSize } });
       setDirectory(data.users);
       setTotal(data.total);
       setActiveUsers(data.activeUsers);
+    } catch (err) {
+      setLoadError(err.response?.data?.error || 'Could not load the user list — see console for details.');
+      console.error(err);
     } finally {
       setLoadingDirectory(false);
     }
@@ -53,9 +64,15 @@ export default function AdminUsers() {
 
   async function search(e) {
     e.preventDefault();
-    const { data } = await api.get('/admin/users', { params: { query } });
-    setSearchResults(data.users);
-    setSearched(true);
+    setLoadError('');
+    try {
+      const { data } = await api.get('/admin/users', { params: { query } });
+      setSearchResults(data.users);
+      setSearched(true);
+    } catch (err) {
+      setLoadError(err.response?.data?.error || 'Search failed — see console for details.');
+      console.error(err);
+    }
   }
 
   async function ban(userId, list) {
@@ -123,6 +140,12 @@ export default function AdminUsers() {
         permanent and deletes everything tied to their account. IP addresses, approximate locations,
         and last-seen times below are visible to admins only.
       </p>
+
+      {loadError && (
+        <div className="mt-4 rounded-lg border border-coral-500/30 bg-coral-500/10 px-4 py-3 text-sm text-coral-400 max-w-lg">
+          {loadError}
+        </div>
+      )}
 
       <div className="grid sm:grid-cols-2 gap-4 mt-6 max-w-lg">
         <div className="card p-4">
