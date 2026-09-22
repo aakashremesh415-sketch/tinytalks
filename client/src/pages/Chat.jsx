@@ -76,6 +76,7 @@ export default function Chat() {
   const [messagesByConv, setMessagesByConv] = useState({});
   const [partnerKeyByConv, setPartnerKeyByConv] = useState({});
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [conversationGone, setConversationGone] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileSidebarTab, setMobileSidebarTab] = useState('history'); // 'friends' | 'history'
 
@@ -290,6 +291,7 @@ export default function Chat() {
     setActiveConversationId(id);
     setView('thread');
     setSidebarOpen(false);
+    setConversationGone(false);
     setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, hasUnread: false } : c)));
 
     if (messagesByConv[id] !== undefined) return; // already loaded this session
@@ -305,6 +307,17 @@ export default function Chat() {
       }
     } catch (err) {
       console.error(err);
+      if (err.response?.status === 404) {
+        // The conversation row itself is gone server-side — most commonly
+        // because the other participant was a guest whose account (and
+        // everything tied to it, via onDelete: Cascade in schema.prisma)
+        // was purged by the nightly retention job after their 2-day
+        // window. That's permanent, not "no messages yet", so this drops
+        // it from the sidebar instead of leaving a dead entry that looks
+        // identical to a brand-new empty chat every time it's reopened.
+        setConversationGone(true);
+        setConversations((prev) => prev.filter((c) => c.id !== id));
+      }
     } finally {
       setHistoryLoading(false);
     }
@@ -604,6 +617,20 @@ export default function Chat() {
               </form>
             </>
           )}
+
+          {view === 'thread' && !activeConv && conversationGone && (
+            <div className="card p-6 flex-1 flex flex-col items-center justify-center gap-3 text-center">
+              <p className="font-display font-semibold text-slate-900 dark:text-slate-100">
+                This conversation is no longer available
+              </p>
+              <p className="text-sm text-slate-500 dark:text-slate-400 max-w-sm">
+                The other person's guest session expired and their data was permanently deleted, so
+                there's no history left to show. Guest accounts (and everything tied to them) are
+                automatically removed 2 days after they're created.
+              </p>
+              <button className="btn-secondary mt-2" onClick={() => setView('setup')}>Back</button>
+            </div>
+          )}
         </main>
 
         {/* Desktop right sidebar: chat history across all conversations
@@ -787,19 +814,30 @@ function FriendsPanel({ user, activeConv, view, incomingRequests, friends, frien
         )}
         <div className="space-y-1">
           {friends.map((f) => (
-            <div key={f.userId} className="group flex items-center gap-1">
+            <div key={f.userId} className="group flex items-start gap-1">
               <button
                 onClick={() => onStartChat(f.userId)}
                 disabled={friendActionBusy === f.userId}
-                className="flex-1 min-w-0 text-left rounded-lg px-3 py-2 hover:bg-slate-100 dark:hover:bg-white/5 flex items-center gap-2"
+                className="flex-1 min-w-0 text-left rounded-lg px-3 py-2 hover:bg-slate-100 dark:hover:bg-white/5"
               >
-                <span className="h-2 w-2 rounded-full bg-mint-500 shrink-0" />
-                <span className="text-sm truncate">{f.displayName}</span>
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-mint-500 shrink-0" />
+                  <span className="text-sm truncate">{f.displayName}</span>
+                </span>
+                {/* Interests are only ever present here if this friend has
+                    accepted AND hasn't marked them private (server-side
+                    filtering — see routes/friends.js shape()); an empty
+                    array just means "nothing to show", not "hidden". */}
+                {f.interests?.length > 0 && (
+                  <span className="block text-xs text-slate-500 dark:text-slate-400 truncate pl-4 mt-0.5">
+                    {f.interests.join(', ')}
+                  </span>
+                )}
               </button>
               <button
                 onClick={() => onRemove(f.userId)}
                 disabled={friendActionBusy === f.userId}
-                className="opacity-0 group-hover:opacity-100 text-xs text-slate-400 hover:text-coral-500 px-1.5 disabled:opacity-50"
+                className="opacity-0 group-hover:opacity-100 text-xs text-slate-400 hover:text-coral-500 px-1.5 py-2 disabled:opacity-50"
                 title="Remove friend"
               >
                 ✕
