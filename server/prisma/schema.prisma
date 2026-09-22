@@ -59,6 +59,11 @@ enum ImageViewMode {
   ONE_TIME
 }
 
+enum FriendStatus {
+  PENDING
+  ACCEPTED
+}
+
 model User {
   id                   String              @id @default(uuid())
   accountType          AccountType         @default(GUEST)
@@ -118,9 +123,29 @@ model User {
   publicKeys           PublicKey[]
   blocksMade           BlockedUser[]       @relation("BlockerRel")
   blocksReceived       BlockedUser[]       @relation("BlockedRel")
+  friendRequestsSent     Friendship[]      @relation("FriendRequester")
+  friendRequestsReceived Friendship[]      @relation("FriendAddressee")
 
   @@index([expiresAt])
   @@index([imageVerifiedAt])
+}
+
+// A friend request (PENDING) that becomes a friendship (ACCEPTED). Friends
+// can start a direct conversation any time via routes/friends.js
+// start-chat, bypassing the random-match queue entirely — the left
+// sidebar lists them separately from anonymous chat history for exactly
+// that reason.
+model Friendship {
+  id          String       @id @default(uuid())
+  requesterId String
+  requester   User         @relation("FriendRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addresseeId String
+  addressee   User         @relation("FriendAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+  status      FriendStatus @default(PENDING)
+  createdAt   DateTime     @default(now())
+
+  @@unique([requesterId, addresseeId])
+  @@index([addresseeId])
 }
 
 // A one-way block: blocker never gets matched with blocked again (checked
