@@ -26,3 +26,9 @@ export function getPusher() {
 export function userChannel(userId) {
   return `private-user-${userId}`;
 }
+
+// Mirrors server/src/lib/pusher.js's PRESENCE_CHANNEL — a single shared
+// channel every logged-in client joins to get a live online/offline
+// roster via Pusher's own presence-channel membership events, rather
+// than polling or maintaining a "last seen" column.
+export const PRESENCE_CHANNEL = 'presence-online-users';

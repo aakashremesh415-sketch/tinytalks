@@ -633,8 +633,8 @@ export default function Chat() {
   };
 
   return (
-    <div className="h-screen h-dvh flex flex-col overflow-hidden">
-      <header className="shrink-0 sticky top-0 z-20 bg-white dark:bg-ink-950 flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6 sm:py-4 border-b border-slate-200 dark:border-white/5">
+    <div className="min-h-screen flex flex-col">
+      <header className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6 sm:py-4 border-b border-slate-200 dark:border-white/5">
         <div className="flex items-center gap-2">
           <button
             onClick={() => { setMobileSidebarTab('friends'); setSidebarOpen(true); }}
@@ -729,10 +729,7 @@ export default function Chat() {
 
           {view === 'thread' && activeConv && (
             <>
-              {/* Sticky within the thread column — like a spreadsheet's
-                  frozen header row, this stays put while the message list
-                  below scrolls, no matter how long the conversation gets. */}
-              <div className="shrink-0 sticky top-0 z-10 bg-white dark:bg-ink-950 flex flex-wrap items-center justify-between gap-2 pb-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="chip bg-mint-500/10 border-mint-500/30 text-mint-400">
                     {activeConv.partnerDisplayName} · end-to-end encrypted
@@ -763,11 +760,7 @@ export default function Chat() {
                 </div>
               </div>
 
-              {/* min-h-0 (not a min-height like 50vh) is what actually lets
-                  this flex child shrink to fit the space left over by the
-                  frozen header/composer above and below it, instead of
-                  forcing the whole page to grow and scroll as a unit. */}
-              <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto card p-3 sm:p-4 space-y-3">
+              <div ref={scrollRef} className="flex-1 overflow-y-auto card p-3 sm:p-4 space-y-3 min-h-[50vh]">
                 {historyLoading && <p className="text-center text-sm text-slate-500 mt-10">Loading…</p>}
                 {!historyLoading && activeMessages.map((m, i) => {
                   if (m.kind === 'system') {
@@ -811,7 +804,7 @@ export default function Chat() {
               </div>
 
               {replyingTo && (
-                <div className="shrink-0 flex items-center justify-between gap-2 rounded-lg px-3 py-2 bg-slate-100 dark:bg-white/5 border-l-2 border-violet-400 text-xs">
+                <div className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 bg-slate-100 dark:bg-white/5 border-l-2 border-violet-400 text-xs">
                   <div className="min-w-0">
                     <p className="text-slate-400 dark:text-slate-500">
                       Replying to {replyingTo.incoming ? (activeConv.partnerDisplayName || 'Anonymous') : 'yourself'}
@@ -826,7 +819,7 @@ export default function Chat() {
                 </div>
               )}
 
-              <form onSubmit={sendText} className="shrink-0 flex gap-2">
+              <form onSubmit={sendText} className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}

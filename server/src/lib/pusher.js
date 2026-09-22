@@ -32,6 +32,15 @@ export function userChannel(userId) {
   return `private-user-${userId}`;
 }
 
+// One shared presence channel every logged-in client joins purely to get
+// a live online/offline roster — Pusher tracks channel membership for us
+// (subscription_succeeded gives the initial member list; member_added/
+// member_removed fire in realtime as people connect/disconnect), so
+// there's no polling or "last seen" column to maintain server-side.
+// Carries no sensitive data (see pusherAuth.js's presence payload), so
+// unlike userChannel it's fine for every authenticated user to join.
+export const PRESENCE_CHANNEL = 'presence-online-users';
+
 export async function notifyUser(userId, event, payload) {
   try {
     await pusher.trigger(userChannel(userId), event, payload);
