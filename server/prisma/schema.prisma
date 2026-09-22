@@ -125,6 +125,20 @@ model User {
   // history of distinct IPs seen lives in IpLog below.
   lastIp               String?
   lastSeenAt           DateTime?
+  // Best-effort reverse-IP geolocation (e.g. "Bengaluru, Karnataka, IN") —
+  // approximate at best, and null whenever the lookup fails, is skipped
+  // for a private/local address, or hasn't run yet. See
+  // middleware/auth.js's lookupIpLocation. NOT derived from GPS/browser
+  // geolocation — that would require an explicit permission prompt to the
+  // visitor, which this silent, admin-only log deliberately avoids.
+  lastLocation         String?
+  // Raw User-Agent string from the most recent request that updated
+  // lastIp/lastSeenAt above (same throttling — not stamped on every
+  // request). Kept raw rather than pre-parsed; lib/userAgent.js's
+  // parseUserAgent turns it into a friendly "Chrome on Android" label at
+  // read time, in routes/admin.js — so a smarter parser later needs no
+  // backfill, just re-reads the same stored strings.
+  lastUserAgent        String?
 
   createdAt            DateTime            @default(now())
   expiresAt            DateTime?           // set for GUEST accounts (createdAt + 2 days)
@@ -138,6 +152,7 @@ model User {
   publicKeys           PublicKey[]
   blocksMade           BlockedUser[]       @relation("BlockerRel")
   blocksReceived       BlockedUser[]       @relation("BlockedRel")
+  reactions            MessageReaction[]
   friendRequestsSent     Friendship[]      @relation("FriendRequester")
   friendRequestsReceived Friendship[]      @relation("FriendAddressee")
   ipLogs               IpLog[]
@@ -158,6 +173,11 @@ model IpLog {
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   ip        String
+  // Same best-effort, approximate reverse-IP lookup as User.lastLocation,
+  // captured at the time this row was written (an IP's geolocation can
+  // drift over time as ISPs reassign blocks, so this is frozen per-entry
+  // rather than re-derived later).
+  location  String?
   userAgent String?
   createdAt DateTime @default(now())
 
@@ -260,7 +280,11 @@ model PublicKey {
   // encrypt a copy for.
   deviceId  String?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // @default(now()) alongside @updatedAt is what lets this migrate cleanly
+  // onto the 47 existing rows from before this column existed (Prisma
+  // needs a value to backfill them with) — it still auto-updates on every
+  // write from here on, exactly like a plain @updatedAt would.
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@unique([userId, deviceId])
   @@index([userId])
@@ -274,6 +298,17 @@ model Conversation {
   participantB   User      @relation("ParticipantB", fields: [participantBId], references: [id], onDelete: Cascade)
   createdAt      DateTime  @default(now())
   endedAt        DateTime?
+
+  // Read-receipt markers — "this participant has read every message
+  // created at or before this timestamp." One field per participant slot
+  // (not a separate join table) since a conversation only ever has two
+  // sides; routes/messages.js POST /:id/read stamps whichever one matches
+  // the caller. A message is "seen" from the sender's point of view when
+  // the OTHER participant's marker is >= that message's createdAt — the
+  // client does that comparison, since these timestamps ride along on the
+  // conversation object it already has.
+  lastReadAtA    DateTime?
+  lastReadAtB    DateTime?
 
   messages       Message[]
   reports        Report[]
@@ -338,10 +373,33 @@ model Message {
   replyTo        Message?     @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
   replies        Message[]    @relation("MessageReplies")
 
+  reactions      MessageReaction[]
+
   createdAt      DateTime     @default(now())
 
   @@index([conversationId])
   @@index([replyToId])
+}
+
+// One user's emoji reaction to one message — a single reaction per
+// (message, user); reacting again with a different emoji replaces it
+// rather than stacking a second one (see the upsert in routes/messages.js
+// POST /:messageId/reactions), same convention most chat apps use.
+// Reactions are plaintext (just an emoji, no message content), so unlike
+// everything else here they're NOT E2E encrypted — the server can read and
+// aggregate them directly, which is what lets it just send a
+// {emoji: count} summary instead of every individual reaction.
+model MessageReaction {
+  id        String   @id @default(uuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji     String
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@index([messageId])
 }
 
 // A single device's encrypted copy of a text/sticker/gif Message — see the
