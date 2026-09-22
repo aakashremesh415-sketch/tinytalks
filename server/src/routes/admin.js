@@ -89,10 +89,53 @@ router.get('/users', asyncHandler(async (req, res) => {
     select: {
       id: true, email: true, displayName: true, accountType: true,
       genderVerification: true, banned: true, banReason: true, createdAt: true,
+      lastSeenAt: true, lastIp: true,
     },
     take: 20,
   });
   res.json({ users });
+}));
+
+// --- Full, paginated user directory (distinct from the search box above,
+// which only ever returns matches for a typed query) — lets an admin just
+// browse everyone, newest first, along with each account's last-seen time
+// and IP so the same view roughly doubles as an activity log. ---
+router.get('/users/list', asyncHandler(async (req, res) => {
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number.parseInt(req.query.pageSize, 10) || 25));
+
+  const [users, total, activeUsers] = await Promise.all([
+    prisma.user.findMany({
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      select: {
+        id: true, email: true, displayName: true, accountType: true,
+        genderVerification: true, banned: true, banReason: true, createdAt: true,
+        lastSeenAt: true, lastIp: true,
+      },
+    }),
+    prisma.user.count(),
+    // "Active" means seen within the same window requireAuth uses to decide
+    // whether to bother re-stamping lastSeenAt at all (see
+    // middleware/auth.js's ACTIVITY_THROTTLE_MS) — a rough "online right
+    // now or in roughly the last few minutes" measure, not a precise
+    // concurrent-session count.
+    prisma.user.count({ where: { lastSeenAt: { gte: new Date(Date.now() - 5 * 60 * 1000) } } }),
+  ]);
+
+  res.json({ users, total, page, pageSize, activeUsers });
+}));
+
+// --- Per-user IP history (see the IpLog model comment in schema.prisma —
+// one row per distinct IP change, not one per request). ---
+router.get('/users/:id/ip-log', asyncHandler(async (req, res) => {
+  const logs = await prisma.ipLog.findMany({
+    where: { userId: req.params.id },
+    orderBy: { createdAt: 'desc' },
+    take: 200,
+  });
+  res.json({ logs });
 }));
 
 // --- Ban a user. Writes a persistent hashed-identifier record so a
@@ -158,13 +201,18 @@ router.get('/images/:imageId/access-log', asyncHandler(async (req, res) => {
 
 // --- Dashboard summary ---
 router.get('/summary', asyncHandler(async (req, res) => {
-  const [pendingVerifications, openReports, underageReports, bannedUsers] = await Promise.all([
+  const [pendingVerifications, openReports, underageReports, bannedUsers, totalUsers, activeUsers] = await Promise.all([
     prisma.user.count({ where: { genderVerification: 'PENDING' } }),
     prisma.report.count({ where: { status: 'OPEN' } }),
     prisma.report.count({ where: { category: 'UNDERAGE_SUSPICION', status: { in: ['OPEN', 'IN_REVIEW'] } } }),
     prisma.user.count({ where: { banned: true } }),
+    prisma.user.count(),
+    // Same "seen in the last 5 minutes" window as /users/list — see that
+    // route's comment for why this is approximate, not an exact concurrent
+    // session count.
+    prisma.user.count({ where: { lastSeenAt: { gte: new Date(Date.now() - 5 * 60 * 1000) } } }),
   ]);
-  res.json({ pendingVerifications, openReports, underageReports, bannedUsers });
+  res.json({ pendingVerifications, openReports, underageReports, bannedUsers, totalUsers, activeUsers });
 }));
 
 export default router;

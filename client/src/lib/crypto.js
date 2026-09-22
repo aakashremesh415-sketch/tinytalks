@@ -17,8 +17,15 @@ import util from 'tweetnacl-util';
 
 const KEY_STORAGE = 'tt_keypair_v1';
 
+// localStorage (not sessionStorage): the chat sidebar lets people reopen
+// old conversations across visits, and decrypting those requires the same
+// keypair that was active when the messages were sent. That means the key
+// now persists until the user clears site data or switches devices/
+// browsers — same trade-off most E2E apps make (Signal, WhatsApp): history
+// is only readable from a device that held the key at the time. Nothing
+// here is ever sent to the server; only the public half is ever published.
 export function loadOrCreateKeyPair() {
-  const stored = sessionStorage.getItem(KEY_STORAGE);
+  const stored = localStorage.getItem(KEY_STORAGE);
   if (stored) {
     const parsed = JSON.parse(stored);
     return {
@@ -27,7 +34,7 @@ export function loadOrCreateKeyPair() {
     };
   }
   const pair = nacl.box.keyPair();
-  sessionStorage.setItem(
+  localStorage.setItem(
     KEY_STORAGE,
     JSON.stringify({
       publicKey: util.encodeBase64(pair.publicKey),
@@ -39,6 +46,46 @@ export function loadOrCreateKeyPair() {
 
 export function publicKeyToBase64(publicKey) {
   return util.encodeBase64(publicKey);
+}
+
+const DEVICE_ID_STORAGE = 'tt_device_id_v1';
+
+// A stable id for this browser, generated once and kept in localStorage
+// right alongside the keypair — this IS what makes a "device" a device for
+// multi-device sync (see server/prisma/schema.prisma's PublicKey.deviceId
+// and MessageCopy): it's what the server upserts a key row by, and what a
+// sender fans a message's copies out to. Nothing about it is secret; it's
+// just an identifier, sent on every request (see api.js).
+export function getOrCreateDeviceId() {
+  let id = localStorage.getItem(DEVICE_ID_STORAGE);
+  if (!id) {
+    id = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(DEVICE_ID_STORAGE, id);
+  }
+  return id;
+}
+
+// Encrypts the same plaintext once per target device, so every device in
+// the list (the recipient's, and the sender's own OTHER devices) gets its
+// own copy it can decrypt with its own secret key. A fresh nonce per copy
+// — nacl.box requires it never repeat for a given key pair, and reusing
+// one across copies encrypted for different public keys is fine
+// cryptographically, but generating fresh ones for every box() call is the
+// simple, always-correct default.
+export function encryptForDevices(plaintext, mySecretKey, devices) {
+  const messageUint8 = util.decodeUTF8(plaintext);
+  return devices.map(({ deviceId, publicKey }) => {
+    const theirPublicKey = util.decodeBase64(publicKey);
+    const nonce = nacl.randomBytes(nacl.box.nonceLength);
+    const box = nacl.box(messageUint8, nonce, theirPublicKey, mySecretKey);
+    return {
+      deviceId,
+      ciphertext: util.encodeBase64(box),
+      nonce: util.encodeBase64(nonce),
+    };
+  });
 }
 
 export function encryptText(plaintext, mySecretKey, theirPublicKeyB64) {

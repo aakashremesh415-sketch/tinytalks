@@ -1,6 +1,13 @@
 import axios from 'axios';
+import { getOrCreateDeviceId } from './crypto.js';
 
 export const api = axios.create({ baseURL: '/api' });
+
+// Identifies which of this account's devices is calling, so the server
+// can hand back the right per-device copy of a multi-device message (see
+// server/src/middleware/auth.js and routes/messages.js). Set once, on
+// every request, same as the auth token below.
+api.defaults.headers.common['X-Device-Id'] = getOrCreateDeviceId();
 
 export function setAuthToken(token) {
   if (token) {

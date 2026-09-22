@@ -4,9 +4,10 @@ import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
 import ReportModal from '../components/ReportModal.jsx';
 import ImageBubble from '../components/ImageBubble.jsx';
-import EmojiPicker from '../components/EmojiPicker.jsx';
-import StickerPicker, { stickerById } from '../components/StickerPicker.jsx';
-import GifPicker from '../components/GifPicker.jsx';
+import { stickerById } from '../components/StickerPicker.jsx';
+import PickerTabs from '../components/PickerTabs.jsx';
+import VoiceRecorder from '../components/VoiceRecorder.jsx';
+import VoiceNoteBubble from '../components/VoiceNoteBubble.jsx';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useRealtime } from '../lib/realtime.jsx';
@@ -19,6 +20,8 @@ import {
   encryptText,
   decryptText,
   encryptBytes,
+  getOrCreateDeviceId,
+  encryptForDevices,
 } from '../lib/crypto.js';
 
 // Gender symbols instead of a plain dropdown — matches the icon-button
@@ -42,6 +45,39 @@ function bumpConversation(list, id, lastMessage) {
   return [updated, ...rest];
 }
 
+// Retries a device-key lookup a few times — mirrors fetchPartnerKeyWithRetry
+// below, for the same reason: a partner who was JUST matched with, or who
+// just opened the app for the first time this session, may not have hit
+// /keys/publish yet when we go to send.
+async function fetchAllDeviceKeys(userId, attempts = 5) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const { data } = await api.get(`/keys/${userId}/all`);
+      if (data.devices && data.devices.length > 0) return data.devices;
+    } catch {
+      // fall through to retry
+    }
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 400));
+  }
+  return [];
+}
+
+// Every device that should get its own encrypted copy of an outgoing
+// text/sticker/GIF message: the partner's devices (so any of their signed-in
+// browsers can read it) plus this account's OTHER devices (so switching
+// devices later doesn't strand new messages on whichever one sent them) —
+// but never THIS device, which already has the plaintext in hand from
+// composing it (see sentCache.js instead, used for viewing it back later).
+// Fetched live at send time, deliberately not cached, so a device that just
+// registered gets included in the very next message sent.
+async function fetchSendTargets(partnerId, myUserId, myDeviceId) {
+  const [partnerDevices, myDevices] = await Promise.all([
+    fetchAllDeviceKeys(partnerId),
+    fetchAllDeviceKeys(myUserId, 2),
+  ]);
+  return [...partnerDevices, ...myDevices.filter((d) => d.deviceId !== myDeviceId)];
+}
+
 function decodeHistoryMessage(m, myUserId, keyPair) {
   const incoming = m.senderId !== myUserId;
   if (m.kind === 'image') {
@@ -51,6 +87,21 @@ function decodeHistoryMessage(m, myUserId, keyPair) {
       imageId: m.image?.id,
       viewMode: m.image?.viewMode,
       image: m.image,
+      nonce: m.nonce,
+      senderPubKey: m.senderPubKey,
+      replyToId: m.replyToId || null,
+      incoming,
+      createdAt: m.createdAt,
+    };
+  }
+  if (m.kind === 'voice') {
+    return {
+      id: m.id,
+      kind: 'voice',
+      // null once the recipient's already listened (erased server-side —
+      // see routes/voiceNotes.js publicVoiceNote()); VoiceNoteBubble reads
+      // that directly as "played"/unavailable.
+      voiceNote: m.voiceNote,
       nonce: m.nonce,
       senderPubKey: m.senderPubKey,
       replyToId: m.replyToId || null,
@@ -92,6 +143,7 @@ function replyPreviewLabel(msg) {
     return s ? `${s.emoji} Sticker` : '🏷️ Sticker';
   }
   if (msg.kind === 'gif') return '🎞️ GIF';
+  if (msg.kind === 'voice') return '🎤 Voice note';
   return msg.plaintext ?? '…';
 }
 
@@ -163,7 +215,10 @@ export default function Chat() {
   useEffect(() => {
     keyPairRef.current = loadOrCreateKeyPair();
 
-    api.post('/keys/publish', { publicKey: publicKeyToBase64(keyPairRef.current.publicKey) }).catch(() => {});
+    api.post('/keys/publish', {
+      publicKey: publicKeyToBase64(keyPairRef.current.publicKey),
+      deviceId: getOrCreateDeviceId(),
+    }).catch(() => {});
     api.get('/messages/conversations')
       .then(({ data }) => {
         const list = data.conversations.map((c) => ({ ...c, hasUnread: false }));
@@ -210,25 +265,56 @@ export default function Chat() {
     // currently open on screen.
     const onMessage = (msg) => {
       const isActive = msg.conversationId === activeConversationIdRef.current;
-      // Decrypt right away (for anything text-like — plain text, stickers,
-      // GIF links — image messages manage their own decrypt-on-open flow
-      // in ImageBubble) and cache the plaintext on the stored message,
-      // rather than leaving it to MessageBubble's lazy per-render decrypt.
-      // Without this, a message received live this session never gets a
-      // `plaintext` in state — which is fine for just displaying it, but
-      // meant a reply quoting it (or its own sidebar preview) had nothing
-      // to show until the page reloaded and re-fetched history.
-      const plaintext = msg.kind !== 'image'
-        ? decryptText(msg.ciphertext, msg.nonce, msg.senderPubKey, keyPairRef.current.secretKey)
-        : undefined;
-      setMessagesByConv((prev) => ({
-        ...prev,
-        [msg.conversationId]: [...(prev[msg.conversationId] || []), { ...msg, plaintext, incoming: true }],
-      }));
+      const incoming = msg.senderId !== user.id;
+      const myDeviceId = getOrCreateDeviceId();
+
+      setMessagesByConv((prev) => {
+        const existing = prev[msg.conversationId] || [];
+        // Every one of a user's own devices is notified on every send/edit
+        // (see server/src/routes/messages.js /send — notifies both
+        // participants), including whichever device/tab actually sent it —
+        // that tab already appended the message to state synchronously
+        // right after its own POST resolved, so this echo would otherwise
+        // double it up.
+        if (existing.some((m) => m.id === msg.id)) return prev;
+
+        let plaintext;
+        let voiceNote;
+        if (msg.kind === 'image') {
+          plaintext = undefined; // ImageBubble manages its own decrypt-on-open flow
+        } else if (msg.kind === 'voice') {
+          plaintext = undefined;
+          voiceNote = { id: msg.voiceNoteId, durationSec: msg.durationSec };
+        } else {
+          // Pick out the copy fanned out to THIS device (see
+          // encryptForDevices/fetchSendTargets) and decrypt with it; a
+          // message from a not-yet-upgraded build with no `copies` array
+          // falls back to the legacy top-level fields, same as the
+          // server's own resolveForDevice does for history.
+          const mine = Array.isArray(msg.copies) ? msg.copies.find((c) => c.deviceId === myDeviceId) : null;
+          if (!incoming && !mine) {
+            // Our own send, echoed to our other devices — this fan-out never
+            // targets the sending device itself (it already has the
+            // plaintext from composing it), so fall back to the same local
+            // cache used for viewing our own sent history.
+            plaintext = getCachedSentPlaintext(msg.id);
+          } else {
+            const ciphertext = mine ? mine.ciphertext : msg.ciphertext;
+            const nonce = mine ? mine.nonce : msg.nonce;
+            plaintext = ciphertext && nonce
+              ? decryptText(ciphertext, nonce, msg.senderPubKey, keyPairRef.current.secretKey)
+              : null;
+          }
+        }
+
+        return {
+          ...prev,
+          [msg.conversationId]: [...existing, { ...msg, voiceNote, plaintext, incoming }],
+        };
+      });
       setConversations((prev) => {
         const bumped = bumpConversation(prev, msg.conversationId, {
-          id: msg.id, kind: msg.kind, ciphertext: msg.ciphertext, nonce: msg.nonce,
-          senderPubKey: msg.senderPubKey, senderId: null, createdAt: msg.createdAt,
+          id: msg.id, kind: msg.kind, senderPubKey: msg.senderPubKey, senderId: msg.senderId, createdAt: msg.createdAt,
         });
         if (bumped === prev) {
           // A message for a conversation we don't have listed yet (e.g. a
@@ -238,25 +324,31 @@ export default function Chat() {
             .catch(() => {});
           return prev;
         }
-        return bumped.map((c) => (c.id === msg.conversationId ? { ...c, hasUnread: !isActive } : c));
+        return bumped.map((c) => (c.id === msg.conversationId ? { ...c, hasUnread: incoming && !isActive } : c));
       });
     };
 
-    // The partner edited a message they'd sent us earlier — decrypt the new
-    // ciphertext right away and overwrite the stored plaintext, so this
-    // works whether the message came from history (plaintext-only, no
-    // ciphertext kept — see decodeHistoryMessage) or arrived live earlier
-    // this session (ciphertext-only, decrypted lazily on render).
+    // A text message got edited — either by the partner, or echoed back to
+    // our own other devices after we ourselves edited it. Resolves the same
+    // per-device `copies` array /send uses; if this is the device that made
+    // the edit, saveEdit() already applied the new plaintext locally, so
+    // there's nothing left to decrypt here.
     const onEdited = (msg) => {
-      const plaintext = decryptText(msg.ciphertext, msg.nonce, msg.senderPubKey, keyPairRef.current.secretKey);
+      const myDeviceId = getOrCreateDeviceId();
       setMessagesByConv((prev) => {
         const list = prev[msg.conversationId];
         if (!list) return prev;
         return {
           ...prev,
-          [msg.conversationId]: list.map((m) => (m.id === msg.id
-            ? { ...m, ciphertext: msg.ciphertext, nonce: msg.nonce, senderPubKey: msg.senderPubKey, plaintext, editedAt: msg.editedAt }
-            : m)),
+          [msg.conversationId]: list.map((m) => {
+            if (m.id !== msg.id) return m;
+            const mine = Array.isArray(msg.copies) ? msg.copies.find((c) => c.deviceId === myDeviceId) : null;
+            if (!m.incoming && !mine) return { ...m, editedAt: msg.editedAt };
+            const plaintext = mine
+              ? decryptText(mine.ciphertext, mine.nonce, msg.senderPubKey, keyPairRef.current.secretKey)
+              : m.plaintext;
+            return { ...m, senderPubKey: msg.senderPubKey, plaintext, editedAt: msg.editedAt };
+          }),
         };
       });
     };
@@ -561,23 +653,23 @@ export default function Chat() {
     // you type (see onChange below), but this catches anything that slipped
     // through — pasted text, for instance.
     const text = applyEmojiShortcuts(draft.trim());
-    const partnerKey = partnerKeyByConv[activeConversationId];
-    if (!text || !partnerKey || !activeConversationId) return;
+    if (!text || !activeConversationId || !activeConv) return;
 
-    const { ciphertext, nonce } = encryptText(text, keyPairRef.current.secretKey, partnerKey);
     const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
     const replyTarget = replyingTo;
     setDraft('');
     setReplyingTo(null);
 
     try {
+      const targets = await fetchSendTargets(activeConv.partnerId, user.id, getOrCreateDeviceId());
+      if (targets.length === 0) throw new Error('No recipient devices available yet.');
+      const copies = encryptForDevices(text, keyPairRef.current.secretKey, targets);
       const { data } = await api.post('/messages/send', {
         conversationId: activeConversationId,
-        ciphertext,
-        nonce,
         senderPubKey,
         kind: 'text',
         replyToId: replyTarget?.id || null,
+        copies,
       });
       cacheSentPlaintext(data.messageId, text);
       const createdAt = new Date().toISOString();
@@ -609,14 +701,15 @@ export default function Chat() {
 
   async function saveEdit(messageId) {
     const text = applyEmojiShortcuts(editDraft.trim());
-    const partnerKey = partnerKeyByConv[activeConversationId];
-    if (!text || !partnerKey) return;
+    if (!text || !activeConv) return;
 
-    const { ciphertext, nonce } = encryptText(text, keyPairRef.current.secretKey, partnerKey);
     const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
 
     try {
-      const { data } = await api.patch(`/messages/${messageId}`, { ciphertext, nonce, senderPubKey });
+      const targets = await fetchSendTargets(activeConv.partnerId, user.id, getOrCreateDeviceId());
+      if (targets.length === 0) throw new Error('No recipient devices available yet.');
+      const copies = encryptForDevices(text, keyPairRef.current.secretKey, targets);
+      const { data } = await api.patch(`/messages/${messageId}`, { senderPubKey, copies });
       cacheSentPlaintext(messageId, text);
       setMessagesByConv((prev) => ({
         ...prev,
@@ -678,28 +771,88 @@ export default function Chat() {
     sendImage(file, viewMode);
   }
 
+  // Voice notes are single-device only, same as images (see the VoiceNote
+  // model comment in schema.prisma and VoiceNoteBubble.jsx) — encrypted
+  // against the partner's single "latest" key, not fanned out per-device.
+  // Keeps a local object URL of the ORIGINAL (unencrypted) recording for
+  // this tab only, so the sender can play back what they just sent without
+  // ever hitting the erase-on-listen endpoint — mirroring sendImage's
+  // localPreviewUrl below, for the same reason (see VoiceNoteBubble's
+  // header comment on why re-decrypting your own sent ciphertext doesn't
+  // otherwise work).
+  async function sendVoiceNote(blob, durationSec) {
+    const partnerKey = partnerKeyByConv[activeConversationId];
+    if (!blob || !partnerKey || !activeConversationId) return;
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const { ciphertext, nonce } = encryptBytes(buf, keyPairRef.current.secretKey, partnerKey);
+    const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
+
+    const fd = new FormData();
+    fd.append('audio', new Blob([ciphertext]), 'blob.bin');
+    fd.append('conversationId', activeConversationId);
+    fd.append('nonce', nonce);
+    fd.append('senderPubKey', senderPubKey);
+    fd.append('durationSec', String(durationSec));
+
+    try {
+      const { data } = await api.post('/voice-notes', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      const createdAt = new Date().toISOString();
+      setMessagesByConv((prev) => ({
+        ...prev,
+        [activeConversationId]: [...(prev[activeConversationId] || []), {
+          id: data.messageId,
+          kind: 'voice',
+          voiceNote: data.voiceNote,
+          nonce,
+          senderPubKey,
+          incoming: false,
+          localBlobUrl: URL.createObjectURL(blob),
+          createdAt,
+        }],
+      }));
+      setConversations((prev) => bumpConversation(prev, activeConversationId, {
+        id: data.messageId, kind: 'voice', senderId: user.id, createdAt,
+      }));
+    } catch (err) {
+      console.error(err);
+      window.alert("Couldn't send that voice note — please try again.");
+    }
+  }
+
+  // Marks a voice note as consumed in local state too (not just inside
+  // VoiceNoteBubble's own component state) so it reads "played" even if the
+  // bubble were to remount later in the same session.
+  function markVoiceConsumed(messageId) {
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [activeConversationId]: (prev[activeConversationId] || []).map((m) => (
+        m.id === messageId ? { ...m, voiceNote: null } : m
+      )),
+    }));
+  }
+
   // Stickers and GIFs both piggyback on the plain-text send path: the
   // "text" being encrypted is just a sticker id or a GIF's CDN URL, and a
   // distinct `kind` is what tells the sidebar/bubble how to render it
   // instead of showing that raw payload. Same reply-target handling as a
   // normal text send.
   async function sendPayload(kind, payloadText) {
-    const partnerKey = partnerKeyByConv[activeConversationId];
-    if (!payloadText || !partnerKey || !activeConversationId) return;
+    if (!payloadText || !activeConversationId || !activeConv) return;
 
-    const { ciphertext, nonce } = encryptText(payloadText, keyPairRef.current.secretKey, partnerKey);
     const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
     const replyTarget = replyingTo;
     setReplyingTo(null);
 
     try {
+      const targets = await fetchSendTargets(activeConv.partnerId, user.id, getOrCreateDeviceId());
+      if (targets.length === 0) throw new Error('No recipient devices available yet.');
+      const copies = encryptForDevices(payloadText, keyPairRef.current.secretKey, targets);
       const { data } = await api.post('/messages/send', {
         conversationId: activeConversationId,
-        ciphertext,
-        nonce,
         senderPubKey,
         kind,
         replyToId: replyTarget?.id || null,
+        copies,
       });
       cacheSentPlaintext(data.messageId, payloadText);
       const createdAt = new Date().toISOString();
@@ -930,6 +1083,7 @@ export default function Chat() {
                       onStartEdit={!m.incoming && m.kind === 'text' ? () => startEdit(m) : null}
                       onSaveEdit={() => saveEdit(m.id)}
                       onCancelEdit={cancelEdit}
+                      onVoiceConsumed={() => markVoiceConsumed(m.id)}
                     />
                   );
                 })}
@@ -974,9 +1128,12 @@ export default function Chat() {
                   📷
                 </button>
                 <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onPickImage} />
-                <EmojiPicker onSelect={(emoji) => setDraft((d) => `${d}${emoji}`)} />
-                <StickerPicker onSelect={sendSticker} />
-                <GifPicker onSelect={sendGif} />
+                <PickerTabs
+                  onEmoji={(emoji) => setDraft((d) => `${d}${emoji}`)}
+                  onSticker={sendSticker}
+                  onGif={sendGif}
+                />
+                <VoiceRecorder onRecorded={sendVoiceNote} disabled={!canSend} />
                 <input
                   className="input flex-1 min-w-0"
                   placeholder="Type a message… try :) or :fire:"
@@ -1272,6 +1429,7 @@ function ConversationPreviewText({ conv, myUserId, keyPair }) {
     return mine ? `You: ${label}` : label;
   }
   if (last.kind === 'gif') return mine ? 'You: 🎞️ GIF' : '🎞️ GIF';
+  if (last.kind === 'voice') return mine ? 'You: 🎤 Voice note' : '🎤 Voice note';
   if (mine) {
     const cached = getCachedSentPlaintext(last.id);
     return cached ? `You: ${cached}` : 'You: (sent)';
@@ -1283,18 +1441,20 @@ function ConversationPreviewText({ conv, myUserId, keyPair }) {
 
 function MessageBubble({
   message, keyPair, senderName, repliedTo, onReply,
-  isEditing, editDraft, onEditDraftChange, onStartEdit, onSaveEdit, onCancelEdit,
+  isEditing, editDraft, onEditDraftChange, onStartEdit, onSaveEdit, onCancelEdit, onVoiceConsumed,
 }) {
   const isMine = !message.incoming;
   let text = message.plaintext;
+  const isMedia = message.kind === 'image' || message.kind === 'voice';
 
   // Text, stickers and GIFs are all "ciphertext that decrypts to a string"
-  // (a sentence, a sticker id, or a GIF URL respectively) — only images
-  // manage their own separate decrypt-on-open flow in ImageBubble.
-  if (message.incoming && message.kind !== 'image' && text === undefined) {
+  // (a sentence, a sticker id, or a GIF URL respectively) — images and
+  // voice notes manage their own separate decrypt-on-open flow instead
+  // (ImageBubble / VoiceNoteBubble).
+  if (message.incoming && !isMedia && text === undefined) {
     text = decryptText(message.ciphertext, message.nonce, message.senderPubKey, keyPair.secretKey);
   }
-  const decryptFailed = message.kind !== 'image' && (text === null || text === undefined);
+  const decryptFailed = !isMedia && (text === null || text === undefined);
   if (decryptFailed) {
     text = isMine ? '🔒 Sent message (unavailable on this device)' : '⚠️ Could not decrypt';
   }
@@ -1341,6 +1501,8 @@ function MessageBubble({
             </div>
           ) : message.kind === 'image' ? (
             <ImageBubble message={message} keyPair={keyPair} isMine={isMine} />
+          ) : message.kind === 'voice' ? (
+            <VoiceNoteBubble message={message} keyPair={keyPair} isMine={isMine} onConsumed={onVoiceConsumed} />
           ) : message.kind === 'sticker' && !decryptFailed ? (
             <div className="flex flex-col items-center gap-0.5 px-2 py-1" title={sticker?.label}>
               <span className="text-6xl leading-none">{sticker?.emoji || '❓'}</span>

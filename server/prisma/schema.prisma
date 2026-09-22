@@ -117,6 +117,15 @@ model User {
   bannedAt             DateTime?
   banReason            String?
 
+  // Admin-only activity tracking (see server/src/middleware/auth.js and
+  // routes/admin.js) — NOT used for matching or shown to other users, only
+  // to admins via the dashboard's active-user count and each user's IP
+  // log. lastIp/lastSeenAt are a cheap denormalized "most recent" pair,
+  // throttled to update at most every few minutes per user; the full
+  // history of distinct IPs seen lives in IpLog below.
+  lastIp               String?
+  lastSeenAt           DateTime?
+
   createdAt            DateTime            @default(now())
   expiresAt            DateTime?           // set for GUEST accounts (createdAt + 2 days)
 
@@ -131,9 +140,28 @@ model User {
   blocksReceived       BlockedUser[]       @relation("BlockedRel")
   friendRequestsSent     Friendship[]      @relation("FriendRequester")
   friendRequestsReceived Friendship[]      @relation("FriendAddressee")
+  ipLogs               IpLog[]
 
   @@index([expiresAt])
   @@index([imageVerifiedAt])
+  @@index([lastSeenAt])
+}
+
+// Admin-only history of IP addresses seen for a user — a new row is
+// appended (never overwritten) each time the IP associated with a request
+// changes from whichever one was last recorded, so this reads as "every
+// distinct IP this account has connected from, and when", not a log of
+// every single request. See middleware/auth.js requireAuth for where rows
+// get written and routes/admin.js for the only route that ever reads them.
+model IpLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ip        String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
 }
 
 // A friend request (PENDING) that becomes a friendship (ACCEPTED). Friends
@@ -220,8 +248,21 @@ model PublicKey {
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   publicKey String   // base64
-  createdAt DateTime @default(now())
 
+  // Stable per-browser id (generated once client-side, kept in
+  // localStorage — see client/src/lib/crypto.js's getOrCreateDeviceId)
+  // rather than a login session id, so re-opening the same browser later
+  // updates this same row instead of piling up a new one. Nullable only
+  // for rows written before this column existed — those never get looked
+  // up by deviceId and just sit unused going forward; nothing reads them
+  // by device identity. New rows always carry one, which is how multi-
+  // device message fan-out (see MessageCopy) knows every device to
+  // encrypt a copy for.
+  deviceId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, deviceId])
   @@index([userId])
 }
 
@@ -248,10 +289,30 @@ model Message {
   senderId       String
   sender         User         @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
 
-  // E2E encrypted payload — server only ever sees ciphertext.
+  // Legacy single-copy E2E payload — still populated for image messages
+  // (Image itself carries the real encrypted bytes in Blob storage; these
+  // stay as metadata) and left as '' for text/sticker/gif messages sent
+  // after multi-device fan-out shipped, since those store one ciphertext
+  // PER DEVICE in `copies` below instead of a single shared one here. Kept
+  // (rather than dropped) so messages sent before that migration remain
+  // readable by whichever single device originally received them.
   ciphertext     String
   nonce          String
-  senderPubKey   String       // sender's public key used for this message, so the recipient can derive the shared secret
+  // The SENDING device's public key. Every MessageCopy below was
+  // encrypted from that same sending device to a different target
+  // device's public key, so any recipient decrypts their own copy with
+  // nacl.box.open(copy.ciphertext, copy.nonce, senderPubKey, myOwnSecretKey)
+  // — one shared field here regardless of how many copies exist.
+  senderPubKey   String
+
+  // One row per device (the recipient's, AND the sender's own other
+  // devices) this message was fanned out to — see routes/messages.js
+  // /send. Lets the same conversation be read from more than one signed-in
+  // device: each device fetches history filtered to its own deviceId
+  // instead of relying on one universal ciphertext only one device holds
+  // the key for. Not used for image messages (still single-device only —
+  // self-destruct/view-once semantics get a lot messier per-device).
+  copies         MessageCopy[]
 
   // Set when the sender edits a text message (see PATCH /messages/:id).
   // Editing re-encrypts client-side and simply overwrites
@@ -260,8 +321,9 @@ model Message {
   // show an "edited" hint without needing a separate edit-history table.
   editedAt       DateTime?
 
-  kind           String       @default("text") // "text" | "image"
+  kind           String       @default("text") // "text" | "image" | "sticker" | "gif" | "voice"
   image          Image?
+  voiceNote      VoiceNote?
 
   // Optional "reply to" reference for the quote-reply feature. Nullable
   // and onDelete: SetNull (rather than Cascade) so deleting the original
@@ -280,6 +342,25 @@ model Message {
 
   @@index([conversationId])
   @@index([replyToId])
+}
+
+// A single device's encrypted copy of a text/sticker/gif Message — see the
+// comment on Message.copies above for why this exists. `deviceId` matches
+// PublicKey.deviceId; ciphertext/nonce are that message's plaintext
+// re-encrypted (fresh nonce per copy) for this specific device's public
+// key, from the sending device's secret key.
+model MessageCopy {
+  id         String   @id @default(uuid())
+  messageId  String
+  message    Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  deviceId   String
+  ciphertext String
+  nonce      String
+  createdAt  DateTime @default(now())
+
+  @@unique([messageId, deviceId])
+  @@index([messageId])
+  @@index([deviceId])
 }
 
 model Image {
@@ -303,6 +384,37 @@ model Image {
   hardDeletedAt     DateTime?
 
   @@index([deletedFromChatAt])
+  @@index([hardDeleteAt])
+}
+
+// A voice note — single-device only, like Image (see routes/voiceNotes.js):
+// encrypted once for whichever key was "latest" for the recipient at
+// upload time, not fanned out per MessageCopy. That's actually the right
+// call here, not just the simple one: "erase after listening" is a
+// single-consumption guarantee, and fanning the same secret out to every
+// device would make "after listening" ambiguous — does the first device
+// to open it erase it for the others too? Keeping it single-device avoids
+// that question entirely. Erasure happens immediately the moment the
+// RECIPIENT (not the sender re-checking their own sent note) finishes
+// listening — see GET /:voiceNoteId/listen — rather than waiting for a
+// cron sweep; hardDeleteAt is only a safety net for one that's never
+// listened to at all.
+model VoiceNote {
+  id            String    @id @default(uuid())
+  messageId     String    @unique
+  message       Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  storagePath   String        // ciphertext blob in Vercel Blob, same as Image
+  durationSec   Int?          // best-effort, client-reported — just for the little duration label in the UI
+
+  uploadedAt    DateTime  @default(now())
+  // No "listened" flag: the recipient listening deletes this row outright
+  // (see routes/voiceNotes.js GET /:voiceNoteId/listen) — the Message it
+  // belongs to just ends up with no VoiceNote attached any more, which is
+  // how the client tells "played" apart from "still waiting". This field
+  // is only a safety net for one that's never listened to at all.
+  hardDeleteAt  DateTime      // uploadedAt + 7 days, same window as images
+
   @@index([hardDeleteAt])
 }
 

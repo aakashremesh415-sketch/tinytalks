@@ -28,7 +28,7 @@ function requireCronSecret(req, res, next) {
 
 router.get('/retention', requireCronSecret, async (req, res) => {
   const now = new Date();
-  const results = { softDeletedImages: 0, hardDeletedImages: 0, purgedGuests: 0, errors: [] };
+  const results = { softDeletedImages: 0, hardDeletedImages: 0, purgedVoiceNotes: 0, purgedGuests: 0, errors: [] };
 
   try {
     const twoDaysAgo = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
@@ -54,6 +54,22 @@ router.get('/retention', requireCronSecret, async (req, res) => {
     results.hardDeletedImages = toPurge.length;
   } catch (err) {
     results.errors.push(`hard-delete: ${err.message}`);
+  }
+
+  try {
+    // Safety net only — a voice note the recipient actually listens to is
+    // already deleted immediately at that point (see routes/voiceNotes.js);
+    // this just catches ones nobody ever opened.
+    const abandonedVoiceNotes = await prisma.voiceNote.findMany({
+      where: { hardDeleteAt: { lte: now } },
+    });
+    for (const note of abandonedVoiceNotes) {
+      await deleteObject(note.storagePath);
+      await prisma.voiceNote.delete({ where: { id: note.id } });
+    }
+    results.purgedVoiceNotes = abandonedVoiceNotes.length;
+  } catch (err) {
+    results.errors.push(`voice-note-purge: ${err.message}`);
   }
 
   try {

@@ -60,6 +60,7 @@ router.post('/', requireAuth, requireImageVerified, upload.single('image'), asyn
   await notifyUser(partnerId, 'message:new', {
     id: message.id,
     conversationId,
+    senderId: req.user.id,
     nonce,
     senderPubKey,
     kind: 'image',

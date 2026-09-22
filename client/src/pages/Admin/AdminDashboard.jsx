@@ -9,6 +9,8 @@ export default function AdminDashboard() {
   }, []);
 
   const cards = [
+    { label: 'Total users', value: summary?.totalUsers, tone: 'violet' },
+    { label: 'Active users (last 5 min)', value: summary?.activeUsers, tone: 'mint' },
     { label: 'Pending gender verifications', value: summary?.pendingVerifications, tone: 'violet' },
     { label: 'Open reports', value: summary?.openReports, tone: 'coral' },
     { label: 'Underage-suspicion reports', value: summary?.underageReports, tone: 'coral', urgent: true },

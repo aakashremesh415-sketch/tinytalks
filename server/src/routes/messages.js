@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { notifyUser } from '../lib/pusher.js';
 import { publicImage } from './images.js';
+import { publicVoiceNote } from './voiceNotes.js';
 
 const router = Router();
 
@@ -16,6 +17,21 @@ const router = Router();
 // below, or Express would try to treat "conversations" as an id) lists
 // them with the single latest message for a sidebar preview; the client
 // decrypts that preview itself since only ciphertext lives here.
+// Picks whichever ciphertext/nonce THIS requesting device can actually
+// decrypt: its own MessageCopy if this message was fanned out (see /send
+// below), falling back to the message's own legacy fields for anything
+// sent before multi-device support existed (readable only by whichever
+// single device originally handled it — unchanged, pre-existing behavior).
+function resolveForDevice(message, deviceId) {
+  const mine = deviceId && message.copies
+    ? message.copies.find((c) => c.deviceId === deviceId)
+    : null;
+  return {
+    ciphertext: mine ? mine.ciphertext : message.ciphertext,
+    nonce: mine ? mine.nonce : message.nonce,
+  };
+}
+
 router.get('/conversations', requireAuth, asyncHandler(async (req, res) => {
   const userId = req.user.id;
   const conversations = await prisma.conversation.findMany({
@@ -23,7 +39,7 @@ router.get('/conversations', requireAuth, asyncHandler(async (req, res) => {
     orderBy: { createdAt: 'desc' },
     take: 50,
     include: {
-      messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+      messages: { orderBy: { createdAt: 'desc' }, take: 1, include: { copies: true } },
       participantA: { select: { id: true, displayName: true } },
       participantB: { select: { id: true, displayName: true } },
     },
@@ -33,6 +49,7 @@ router.get('/conversations', requireAuth, asyncHandler(async (req, res) => {
     conversations: conversations.map((c) => {
       const partner = c.participantAId === userId ? c.participantB : c.participantA;
       const last = c.messages[0] || null;
+      const resolved = last ? resolveForDevice(last, req.deviceId) : null;
       return {
         id: c.id,
         partnerId: partner.id,
@@ -42,8 +59,8 @@ router.get('/conversations', requireAuth, asyncHandler(async (req, res) => {
         lastMessage: last && {
           id: last.id,
           kind: last.kind,
-          ciphertext: last.ciphertext,
-          nonce: last.nonce,
+          ciphertext: resolved.ciphertext,
+          nonce: resolved.nonce,
           senderPubKey: last.senderPubKey,
           senderId: last.senderId,
           createdAt: last.createdAt,
@@ -70,43 +87,59 @@ router.get('/:conversationId', requireAuth, asyncHandler(async (req, res) => {
   const messages = await prisma.message.findMany({
     where: { conversationId: req.params.conversationId },
     orderBy: { createdAt: 'asc' },
-    include: { image: true },
+    include: { image: true, voiceNote: true, copies: true },
   });
 
   res.json({
     conversationId: conversation.id,
     partnerId,
     endedAt: conversation.endedAt,
-    messages: messages.map((m) => ({
-      id: m.id,
-      kind: m.kind,
-      ciphertext: m.ciphertext,
-      nonce: m.nonce,
-      senderPubKey: m.senderPubKey,
-      senderId: m.senderId,
-      replyToId: m.replyToId,
-      editedAt: m.editedAt,
-      createdAt: m.createdAt,
-      image: m.image ? publicImage(m.image) : null,
-    })),
+    messages: messages.map((m) => {
+      const resolved = resolveForDevice(m, req.deviceId);
+      return {
+        id: m.id,
+        kind: m.kind,
+        ciphertext: resolved.ciphertext,
+        nonce: resolved.nonce,
+        senderPubKey: m.senderPubKey,
+        senderId: m.senderId,
+        replyToId: m.replyToId,
+        editedAt: m.editedAt,
+        createdAt: m.createdAt,
+        image: m.image ? publicImage(m.image) : null,
+        voiceNote: m.voiceNote ? publicVoiceNote(m.voiceNote) : null,
+      };
+    }),
   });
 }));
 
-// Relay of an already-E2E-encrypted text message (replaces the old
-// Socket.io 'message:send' handler). The server never sees plaintext —
-// ciphertext/nonce were produced client-side with nacl.box using the
-// recipient's published public key.
+// Relay of an already-E2E-encrypted text/sticker/gif message (replaces the
+// old Socket.io 'message:send' handler). The server never sees
+// plaintext — every copy in `copies` was produced client-side with
+// nacl.box, from the sending device's secret key to one target device's
+// published public key (see client/src/lib/crypto.js's
+// encryptForDevices). The client is expected to have already fanned this
+// out to every one of the recipient's devices AND its own other devices
+// (via GET /keys/:userId/all for both sides) — this route just persists
+// whatever copies it's handed; it has no way to tell if one was missed.
 //
-// Like the old socket handler, this notifies only the OTHER participant
-// (over their private-user-<id> Pusher channel) — the sender already
-// rendered its own copy optimistically the moment it called this API, so
-// there's no echo to exclude and no shared "conversation channel" to
-// manage.
+// Notifies BOTH participants' private-user-<id> Pusher channels (not just
+// the partner, like the old single-device version did) — every one of a
+// user's signed-in devices shares that same channel, so this is what
+// makes a message show up live on the sender's OTHER devices too, not
+// just on next reload. The full `copies` array rides along in the push
+// payload (small — a handful of devices, short ciphertexts) so each
+// receiving device can pick out its own without a round trip.
 router.post('/send', requireAuth, asyncHandler(async (req, res) => {
-  const { conversationId, ciphertext, nonce, senderPubKey, kind, replyToId } = req.body;
+  const { conversationId, senderPubKey, kind, replyToId, copies } = req.body;
 
-  if (!conversationId || !ciphertext || !nonce || !senderPubKey) {
-    return res.status(400).json({ error: 'conversationId, ciphertext, nonce and senderPubKey are required.' });
+  if (!conversationId || !senderPubKey || !Array.isArray(copies) || copies.length === 0) {
+    return res.status(400).json({ error: 'conversationId, senderPubKey and a non-empty copies array are required.' });
+  }
+  for (const c of copies) {
+    if (!c.deviceId || !c.ciphertext || !c.nonce) {
+      return res.status(400).json({ error: 'Each copy needs deviceId, ciphertext and nonce.' });
+    }
   }
 
   const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
@@ -130,11 +163,12 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     data: {
       conversationId,
       senderId: req.user.id,
-      ciphertext,
-      nonce,
+      ciphertext: '',
+      nonce: '',
       senderPubKey,
       kind: kind || 'text',
       replyToId: validReplyToId,
+      copies: { create: copies.map((c) => ({ deviceId: c.deviceId, ciphertext: c.ciphertext, nonce: c.nonce })) },
     },
   });
 
@@ -142,30 +176,40 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     ? conversation.participantBId
     : conversation.participantAId;
 
-  await notifyUser(partnerId, 'message:new', {
+  const payload = {
     id: message.id,
     conversationId,
-    ciphertext,
-    nonce,
+    senderId: req.user.id,
     senderPubKey,
     kind: message.kind,
     replyToId: message.replyToId,
     createdAt: message.createdAt,
-  });
+    copies,
+  };
+  await Promise.all([
+    notifyUser(partnerId, 'message:new', payload),
+    notifyUser(req.user.id, 'message:new', payload),
+  ]);
 
   res.status(201).json({ ok: true, messageId: message.id, replyToId: message.replyToId });
 }));
 
-// Editing a sent text message — the client re-encrypts the new text with
-// the same partner key and PATCHes the result over; the server just swaps
-// in the new ciphertext/nonce/senderPubKey and stamps editedAt, exactly
-// like /send, and never sees plaintext at any point. Only the original
-// sender may edit, and only text messages (an image's ciphertext is the
-// photo itself — "editing" it doesn't make sense).
+// Editing a sent text message — the client re-encrypts the new text for
+// every device again (same fan-out as /send) and PATCHes the result over;
+// the server just replaces this message's MessageCopy rows and stamps
+// editedAt, never seeing plaintext at any point. Only the original sender
+// may edit, and only text messages (a sticker/GIF's "text" is an id/URL,
+// not something a person edits; an image's ciphertext is the photo
+// itself).
 router.patch('/:messageId', requireAuth, asyncHandler(async (req, res) => {
-  const { ciphertext, nonce, senderPubKey } = req.body;
-  if (!ciphertext || !nonce || !senderPubKey) {
-    return res.status(400).json({ error: 'ciphertext, nonce and senderPubKey are required.' });
+  const { senderPubKey, copies } = req.body;
+  if (!senderPubKey || !Array.isArray(copies) || copies.length === 0) {
+    return res.status(400).json({ error: 'senderPubKey and a non-empty copies array are required.' });
+  }
+  for (const c of copies) {
+    if (!c.deviceId || !c.ciphertext || !c.nonce) {
+      return res.status(400).json({ error: 'Each copy needs deviceId, ciphertext and nonce.' });
+    }
   }
 
   const message = await prisma.message.findUnique({ where: { id: req.params.messageId } });
@@ -183,19 +227,26 @@ router.patch('/:messageId', requireAuth, asyncHandler(async (req, res) => {
     ? conversation.participantBId
     : conversation.participantAId;
 
-  const updated = await prisma.message.update({
-    where: { id: message.id },
-    data: { ciphertext, nonce, senderPubKey, editedAt: new Date() },
-  });
+  const editedAt = new Date();
+  const [updated] = await prisma.$transaction([
+    prisma.message.update({ where: { id: message.id }, data: { senderPubKey, editedAt } }),
+    prisma.messageCopy.deleteMany({ where: { messageId: message.id } }),
+    prisma.messageCopy.createMany({
+      data: copies.map((c) => ({ messageId: message.id, deviceId: c.deviceId, ciphertext: c.ciphertext, nonce: c.nonce })),
+    }),
+  ]);
 
-  await notifyUser(partnerId, 'message:edited', {
+  const payload = {
     id: updated.id,
     conversationId: updated.conversationId,
-    ciphertext: updated.ciphertext,
-    nonce: updated.nonce,
     senderPubKey: updated.senderPubKey,
     editedAt: updated.editedAt,
-  });
+    copies,
+  };
+  await Promise.all([
+    notifyUser(partnerId, 'message:edited', payload),
+    notifyUser(req.user.id, 'message:edited', payload),
+  ]);
 
   res.json({ ok: true, editedAt: updated.editedAt });
 }));
