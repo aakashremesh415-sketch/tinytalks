@@ -9,7 +9,7 @@ import PickerTabs from '../components/PickerTabs.jsx';
 import VoiceRecorder from '../components/VoiceRecorder.jsx';
 import VoiceNoteBubble from '../components/VoiceNoteBubble.jsx';
 import ViewToggle from '../components/ViewToggle.jsx';
-import { api } from '../lib/api.js';
+import { api, getErrorMessage } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useRealtime } from '../lib/realtime.jsx';
 import { cacheSentPlaintext, getCachedSentPlaintext } from '../lib/sentCache.js';
@@ -376,11 +376,23 @@ export default function Chat() {
     const onFriendRequest = () => { refreshFriends(); };
     const onFriendAccepted = () => { refreshFriends(); };
 
+    // Either participant cleared this conversation's history (see the
+    // "Clear chat" button below / DELETE /messages/:id/history) — drop it
+    // from local state on both ends so an already-open window updates live
+    // instead of showing messages the server no longer has.
+    const onCleared = (data) => {
+      setMessagesByConv((prev) => {
+        if (!prev[data.conversationId]) return prev;
+        return { ...prev, [data.conversationId]: [] };
+      });
+    };
+
     channel.bind('queue:matched', onMatched);
     channel.bind('message:new', onMessage);
     channel.bind('message:edited', onEdited);
     channel.bind('friend:request', onFriendRequest);
     channel.bind('friend:accepted', onFriendAccepted);
+    channel.bind('conversation:cleared', onCleared);
 
     return () => {
       channel.unbind('queue:matched', onMatched);
@@ -388,6 +400,7 @@ export default function Chat() {
       channel.unbind('message:edited', onEdited);
       channel.unbind('friend:request', onFriendRequest);
       channel.unbind('friend:accepted', onFriendAccepted);
+      channel.unbind('conversation:cleared', onCleared);
     };
   }, [channel]);
 
@@ -648,6 +661,28 @@ export default function Chat() {
   function closeThread() {
     if (activeConversationId) api.post('/messages/end', { conversationId: activeConversationId }).catch(() => {});
     setView('setup');
+  }
+
+  const [clearBusy, setClearBusy] = useState(false);
+  // Old messages that can never decrypt (the device that held the only key
+  // for them is gone — a rotated key, a cleared browser, a message from
+  // before multi-device fan-out existed) have no fix but removal; the
+  // server never has plaintext to re-encrypt from. This wipes the
+  // conversation's history outright for BOTH participants, not just
+  // hiding it locally.
+  async function clearHistory() {
+    if (!activeConv) return;
+    if (!window.confirm("Clear this conversation's history for both of you? Old messages that can't be decrypted have no other fix, but this removes everything — including messages that do still work. This can't be undone.")) return;
+    setClearBusy(true);
+    try {
+      await api.delete(`/messages/${activeConv.id}/history`);
+      setMessagesByConv((prev) => ({ ...prev, [activeConv.id]: [] }));
+    } catch (err) {
+      console.error(err);
+      window.alert(getErrorMessage(err, "Couldn't clear this conversation."));
+    } finally {
+      setClearBusy(false);
+    }
   }
 
   async function blockPartner() {
@@ -1059,6 +1094,14 @@ export default function Chat() {
                   <button className="btn-secondary !py-1.5 !px-3 text-sm" onClick={() => setReportOpen(true)}>Report</button>
                   <button className="btn-secondary !py-1.5 !px-3 text-sm" onClick={blockPartner} disabled={blockBusy}>
                     {blockBusy ? 'Blocking…' : 'Block'}
+                  </button>
+                  <button
+                    className="btn-secondary !py-1.5 !px-3 text-sm"
+                    onClick={clearHistory}
+                    disabled={clearBusy}
+                    title="Permanently clears this chat's history for both of you — the fix for old 'Could not decrypt' messages"
+                  >
+                    {clearBusy ? 'Clearing…' : 'Clear chat'}
                   </button>
                   <button className="btn-secondary !py-1.5 !px-3 text-sm" onClick={closeThread}>Close</button>
                 </div>

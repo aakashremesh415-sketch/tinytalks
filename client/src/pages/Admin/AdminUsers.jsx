@@ -78,6 +78,29 @@ export default function AdminUsers() {
     }
   }
 
+  // Permanent — cascades through everything the account owns (messages,
+  // conversations, images, voice notes, keys, friendships, reports, IP
+  // log). Distinct from banning, which keeps the record but locks the
+  // account out; this is for cleanup (spam/test accounts, a removal
+  // request), not moderation, so it gets its own, more insistent
+  // confirmation rather than reusing the ban reason box.
+  async function remove(user, list, { isDirectory } = {}) {
+    const label = user.displayName || user.email || 'this user';
+    if (!window.confirm(`Permanently remove ${label}? This deletes their account and everything tied to it — messages, images, friends, reports. This can't be undone.`)) {
+      return;
+    }
+    setBusyId(user.id);
+    try {
+      await api.delete(`/admin/users/${user.id}`);
+      list((prev) => prev.filter((u) => u.id !== user.id));
+      if (isDirectory) setTotal((t) => Math.max(0, t - 1));
+    } catch (err) {
+      window.alert(err.response?.data?.error || "Couldn't remove that user.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function viewIpLog(user) {
     setIpLogFor(user);
     setIpLogLoading(true);
@@ -96,8 +119,9 @@ export default function AdminUsers() {
       <h1 className="font-display text-2xl font-bold">Users &amp; bans</h1>
       <p className="text-slate-500 dark:text-slate-400 mt-1">
         Banning writes a permanent hashed-identifier record, so a banned guest can't just re-verify a
-        fresh ephemeral account with the same email after their old one is purged. IP addresses and
-        last-seen times below are visible to admins only.
+        fresh ephemeral account with the same email after their old one is purged. Removing a user is
+        permanent and deletes everything tied to their account. IP addresses, approximate locations,
+        and last-seen times below are visible to admins only.
       </p>
 
       <div className="grid sm:grid-cols-2 gap-4 mt-6 max-w-lg">
@@ -134,6 +158,7 @@ export default function AdminUsers() {
                 busy={busyId === u.id}
                 onBan={() => ban(u.id, setSearchResults)}
                 onUnban={() => unban(u.id, setSearchResults)}
+                onRemove={() => remove(u, setSearchResults)}
                 onViewIpLog={() => viewIpLog(u)}
               />
             ))}
@@ -160,6 +185,7 @@ export default function AdminUsers() {
               busy={busyId === u.id}
               onBan={() => ban(u.id, setDirectory)}
               onUnban={() => unban(u.id, setDirectory)}
+              onRemove={() => remove(u, setDirectory, { isDirectory: true })}
               onViewIpLog={() => viewIpLog(u)}
             />
           ))}
@@ -184,8 +210,11 @@ export default function AdminUsers() {
               {!ipLogLoading && ipLog.length === 0 && <p className="text-sm text-slate-500">No IP history recorded yet.</p>}
               {!ipLogLoading && ipLog.map((l) => (
                 <div key={l.id} className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 bg-slate-100 dark:bg-white/5 text-sm">
-                  <span className="font-mono">{l.ip}</span>
-                  <span className="text-xs text-slate-500 dark:text-slate-400">{new Date(l.createdAt).toLocaleString()}</span>
+                  <span className="min-w-0">
+                    <span className="font-mono">{l.ip}</span>
+                    {l.location && <span className="block text-xs text-slate-500 dark:text-slate-400 truncate">{l.location}</span>}
+                  </span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400 shrink-0">{new Date(l.createdAt).toLocaleString()}</span>
                 </div>
               ))}
             </div>
@@ -196,7 +225,8 @@ export default function AdminUsers() {
   );
 }
 
-function UserRow({ u, busy, onBan, onUnban, onViewIpLog }) {
+function UserRow({ u, busy, onBan, onUnban, onRemove, onViewIpLog }) {
+  const isAdmin = u.accountType === 'ADMIN';
   return (
     <div className="card p-4 flex items-center justify-between gap-3">
       <div className="min-w-0">
@@ -206,10 +236,11 @@ function UserRow({ u, busy, onBan, onUnban, onViewIpLog }) {
         <p className="text-xs text-slate-500 mt-0.5">
           {u.accountType} · gender: {u.genderVerification} · joined {new Date(u.createdAt).toLocaleDateString()}
         </p>
-        <p className="text-xs mt-0.5 flex items-center gap-1.5">
+        <p className="text-xs mt-0.5 flex items-center gap-1.5 flex-wrap">
           <span className={`inline-block h-1.5 w-1.5 rounded-full ${isActive(u.lastSeenAt) ? 'bg-mint-500' : 'bg-slate-400 dark:bg-slate-500'}`} />
           <span className="text-slate-500 dark:text-slate-400">{formatSeen(u.lastSeenAt)}</span>
           {u.lastIp && <span className="text-slate-400 dark:text-slate-500 font-mono">· {u.lastIp}</span>}
+          {u.lastLocation && <span className="text-slate-400 dark:text-slate-500">· {u.lastLocation}</span>}
         </p>
         {u.banned && <span className="chip mt-1 bg-coral-500/10 border-coral-500/30 text-coral-400">Banned: {u.banReason}</span>}
       </div>
@@ -222,6 +253,16 @@ function UserRow({ u, busy, onBan, onUnban, onViewIpLog }) {
         >
           {u.banned ? 'Unban' : 'Ban'}
         </button>
+        {!isAdmin && (
+          <button
+            className="btn-secondary !py-1.5 !px-3 text-sm border-coral-500/40 text-coral-400 hover:bg-coral-500/10"
+            disabled={busy}
+            onClick={onRemove}
+            title="Permanently delete this account and everything tied to it"
+          >
+            Remove
+          </button>
+        )}
       </div>
     </div>
   );

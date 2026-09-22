@@ -251,6 +251,39 @@ router.patch('/:messageId', requireAuth, asyncHandler(async (req, res) => {
   res.json({ ok: true, editedAt: updated.editedAt });
 }));
 
+// Wipes every message in a conversation outright. The practical fix for
+// old messages permanently stuck showing "Could not decrypt": once a
+// device's key has rotated (localStorage cleared, a fresh browser, an old
+// pre-multi-device message whose one-and-only holder is gone) the
+// ciphertext encrypted for that old key is unreadable forever — the server
+// never had the plaintext to re-encrypt from, so there's no way to
+// "repair" these, only to clear them out. Either participant can do this
+// for their shared conversation; it's a hard delete of the Message rows
+// (cascading to Image/VoiceNote/MessageCopy via onDelete: Cascade in
+// schema.prisma), not a soft per-user hide — it clears the history for
+// BOTH sides, same as if the conversation just started over. Both
+// participants are notified live so an already-open chat window clears
+// immediately instead of showing stale messages until a refresh.
+router.delete('/:conversationId/history', requireAuth, asyncHandler(async (req, res) => {
+  const conversation = await prisma.conversation.findUnique({ where: { id: req.params.conversationId } });
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found.' });
+  if (![conversation.participantAId, conversation.participantBId].includes(req.user.id)) {
+    return res.status(403).json({ error: 'Not a participant in this conversation.' });
+  }
+
+  await prisma.message.deleteMany({ where: { conversationId: conversation.id } });
+
+  const partnerId = conversation.participantAId === req.user.id
+    ? conversation.participantBId
+    : conversation.participantAId;
+  await Promise.all([
+    notifyUser(partnerId, 'conversation:cleared', { conversationId: conversation.id }),
+    notifyUser(req.user.id, 'conversation:cleared', { conversationId: conversation.id }),
+  ]);
+
+  res.json({ ok: true });
+}));
+
 router.post('/end', requireAuth, asyncHandler(async (req, res) => {
   const { conversationId } = req.body;
   const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });

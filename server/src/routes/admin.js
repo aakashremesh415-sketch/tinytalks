@@ -3,7 +3,7 @@ import { prisma } from '../db.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { hashIdentifier } from '../lib/hash.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
-import { fetchObject } from '../lib/storage.js';
+import { fetchObject, deleteObject } from '../lib/storage.js';
 import { publicUser } from './auth.js';
 
 const router = Router();
@@ -89,7 +89,7 @@ router.get('/users', asyncHandler(async (req, res) => {
     select: {
       id: true, email: true, displayName: true, accountType: true,
       genderVerification: true, banned: true, banReason: true, createdAt: true,
-      lastSeenAt: true, lastIp: true,
+      lastSeenAt: true, lastIp: true, lastLocation: true,
     },
     take: 20,
   });
@@ -112,7 +112,7 @@ router.get('/users/list', asyncHandler(async (req, res) => {
       select: {
         id: true, email: true, displayName: true, accountType: true,
         genderVerification: true, banned: true, banReason: true, createdAt: true,
-        lastSeenAt: true, lastIp: true,
+        lastSeenAt: true, lastIp: true, lastLocation: true,
       },
     }),
     prisma.user.count(),
@@ -171,6 +171,34 @@ router.post('/users/:id/unban', asyncHandler(async (req, res) => {
     data: { banned: false, banReason: null },
   });
   res.json({ ok: true, user: { id: user.id, banned: user.banned } });
+}));
+
+// --- Manual, permanent account removal. Distinct from banning: a ban
+// keeps the account (and its history) around but locks it out; this
+// deletes the row outright, which cascades through every relation with
+// onDelete: Cascade in schema.prisma (messages, conversations, images,
+// voice notes, keys, blocks, friendships, reports, IP log). Same
+// safeguards as the self-service DELETE /me — an admin can't use this to
+// delete their own account (that's a distinct, deliberate flow) or
+// another admin's. Banning first is usually the better call for abuse
+// (it preserves the record and, via BanRecord, blocks re-verification by
+// the same identifier); this is for cleanup — spam accounts, test users,
+// or a user's own request to be forgotten. ---
+router.delete('/users/:id', asyncHandler(async (req, res) => {
+  const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!target) return res.status(404).json({ error: 'User not found.' });
+  if (target.id === req.user.id) {
+    return res.status(400).json({ error: "You can't remove your own account from here." });
+  }
+  if (target.accountType === 'ADMIN') {
+    return res.status(400).json({ error: "Admin accounts can't be removed from here." });
+  }
+
+  if (target.avatarUrl) deleteObject(target.avatarUrl).catch(() => {});
+  if (target.genderPhotoPath) deleteObject(target.genderPhotoPath).catch(() => {});
+
+  await prisma.user.delete({ where: { id: target.id } });
+  res.json({ ok: true });
 }));
 
 // --- Image moderation: view any not-yet-hard-deleted image (soft-deleted
