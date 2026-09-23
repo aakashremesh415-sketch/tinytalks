@@ -50,34 +50,49 @@ async function lookupIpLocation(ip) {
 
 // Admin-only activity/IP tracking (see the User.lastIp/lastSeenAt and IpLog
 // comments in schema.prisma, and routes/admin.js for the only place this is
-// ever read back). Fire-and-forget on purpose — this rides along on every
-// authenticated request, so it must never add latency or fail the request
-// it's piggybacking on. Throttled so a chatty client doesn't turn into a
-// write on every single API call: the denormalized lastIp/lastSeenAt pair
-// only updates once the previous stamp is a few minutes stale (or the IP
-// itself changed), and a new IpLog row — with its own geolocation lookup —
-// is only appended when the IP actually changed from whatever was last
-// recorded for this user.
+// ever read back). Throttled so a chatty client doesn't turn into a write
+// on every single API call: the denormalized lastIp/lastSeenAt pair only
+// updates once the previous stamp is a few minutes stale (or the IP itself
+// changed), and a new IpLog row — with its own geolocation lookup — is
+// only appended when the IP actually changed from whatever was last
+// recorded for this user, which for any given user is rare (first login,
+// or a genuine network change).
+//
+// This used to be fire-and-forget (not awaited by the caller), on the
+// theory that admin-only tracking should never add latency to a real
+// request. In practice that meant it silently never worked at all: this
+// app runs as a Vercel serverless function (see api/index.js), and once
+// Express sends the HTTP response, the function's execution can be frozen
+// or torn down at any moment afterward — there's no guarantee an
+// unawaited promise chain still running in the background ever gets to
+// finish. The geolocation fetch plus two DB writes almost always lost
+// that race, so lastLocation/IpLog just never populated. Now this is
+// awaited by requireAuth below; the common case (nothing stale, IP
+// unchanged) returns immediately and costs nothing, and the rare
+// ipChanged case (first login, or a real IP change) adds one real network
+// round trip to that one request, which is the actual price of the
+// lookup actually completing.
 const ACTIVITY_THROTTLE_MS = 5 * 60 * 1000;
-function trackActivity(req, user) {
+async function trackActivity(req, user) {
   const ip = getClientIp(req);
   if (!ip) return;
   const stale = !user.lastSeenAt || Date.now() - new Date(user.lastSeenAt).getTime() > ACTIVITY_THROTTLE_MS;
   const ipChanged = user.lastIp !== ip;
   if (!stale && !ipChanged) return;
 
-  if (ipChanged) {
-    // The geolocation lookup is the only slow part here, so it's the only
-    // part chained onto a promise — everything else about this request
-    // has already moved on by the time it resolves.
-    lookupIpLocation(ip)
-      .then((location) => Promise.all([
+  try {
+    if (ipChanged) {
+      const location = await lookupIpLocation(ip);
+      await Promise.all([
         prisma.user.update({ where: { id: user.id }, data: { lastIp: ip, lastSeenAt: new Date(), lastLocation: location } }),
         prisma.ipLog.create({ data: { userId: user.id, ip, location, userAgent: req.headers['user-agent'] || null } }),
-      ]))
-      .catch(() => {});
-  } else {
-    prisma.user.update({ where: { id: user.id }, data: { lastSeenAt: new Date() } }).catch(() => {});
+      ]);
+    } else {
+      await prisma.user.update({ where: { id: user.id }, data: { lastSeenAt: new Date() } });
+    }
+  } catch (err) {
+    // Best-effort — this must never fail the request it's piggybacking on.
+    console.error('[auth] activity tracking failed:', err);
   }
 }
 
@@ -111,7 +126,7 @@ export async function requireAuth(req, res, next) {
     // kept around as a stable per-device identifier in case something
     // else needs it later (e.g. per-device notification preferences).
     req.deviceId = req.headers['x-device-id'] || null;
-    trackActivity(req, user);
+    await trackActivity(req, user);
     next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid or expired token' });

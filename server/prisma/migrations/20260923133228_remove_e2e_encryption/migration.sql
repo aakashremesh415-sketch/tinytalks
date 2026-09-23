@@ -1,4 +1,5 @@
 DELETE FROM "Message";
+DELETE FROM "Message";
 /*
   Warnings:
 

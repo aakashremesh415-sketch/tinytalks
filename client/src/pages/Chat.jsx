@@ -614,12 +614,23 @@ export default function Chat() {
         replyToId: replyTarget?.id || null,
       });
       const createdAt = new Date().toISOString();
-      setMessagesByConv((prev) => ({
-        ...prev,
-        [activeConversationId]: [...(prev[activeConversationId] || []), {
-          id: data.messageId, kind: 'text', plaintext: text, replyToId: data.replyToId || null, incoming: false, createdAt,
-        }],
-      }));
+      setMessagesByConv((prev) => {
+        const existing = prev[activeConversationId] || [];
+        // The server notifies THIS account's own other devices/tabs too
+        // (see routes/messages.js /send), including this same tab, as a
+        // multi-tab sync mechanism — and it can arrive over the Pusher
+        // socket before this very POST's response does. onMessage already
+        // guards against double-adding for that case; this guards the
+        // other direction, so whichever of the two arrives second is a
+        // no-op instead of a duplicate bubble.
+        if (existing.some((m) => m.id === data.messageId)) return prev;
+        return {
+          ...prev,
+          [activeConversationId]: [...existing, {
+            id: data.messageId, kind: 'text', plaintext: text, replyToId: data.replyToId || null, incoming: false, createdAt,
+          }],
+        };
+      });
       setConversations((prev) => bumpConversation(prev, activeConversationId, {
         id: data.messageId, kind: 'text', senderId: user.id, createdAt,
       }));
@@ -785,12 +796,17 @@ export default function Chat() {
         replyToId: replyTarget?.id || null,
       });
       const createdAt = new Date().toISOString();
-      setMessagesByConv((prev) => ({
-        ...prev,
-        [activeConversationId]: [...(prev[activeConversationId] || []), {
-          id: data.messageId, kind, plaintext: payloadText, replyToId: data.replyToId || null, incoming: false, createdAt,
-        }],
-      }));
+      setMessagesByConv((prev) => {
+        const existing = prev[activeConversationId] || [];
+        // Same self-echo race as sendText above — see its comment.
+        if (existing.some((m) => m.id === data.messageId)) return prev;
+        return {
+          ...prev,
+          [activeConversationId]: [...existing, {
+            id: data.messageId, kind, plaintext: payloadText, replyToId: data.replyToId || null, incoming: false, createdAt,
+          }],
+        };
+      });
       setConversations((prev) => bumpConversation(prev, activeConversationId, {
         id: data.messageId, kind, senderId: user.id, createdAt,
       }));
