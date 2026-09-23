@@ -17,16 +17,16 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 // Send a voice note. Like images, this is single-device only (see the
 // comment on the VoiceNote model in schema.prisma for why erase-on-listen
-// and multi-device fan-out don't mix) — the uploaded bytes are expected to
-// already be E2E-encrypted client-side (nacl.box, same as images) against
-// the partner's currently-registered key, not a per-device fan-out. Not
-// gated behind image/age verification — voice doesn't carry the same risk
-// profile that gate exists for.
+// and multi-device fan-out don't mix) — the uploaded bytes are the raw
+// audio, stored and playable directly by the server (the app is no longer
+// end-to-end encrypted; see the note on Message.text in schema.prisma).
+// Not gated behind image/age verification — voice doesn't carry the same
+// risk profile that gate exists for.
 router.post('/', requireAuth, upload.single('audio'), asyncHandler(async (req, res) => {
-  const { conversationId, nonce, senderPubKey, durationSec } = req.body;
+  const { conversationId, durationSec } = req.body;
 
-  if (!conversationId || !nonce || !senderPubKey) {
-    return res.status(400).json({ error: 'conversationId, nonce and senderPubKey are required.' });
+  if (!conversationId) {
+    return res.status(400).json({ error: 'conversationId is required.' });
   }
   if (!req.file) return res.status(400).json({ error: 'Audio file is required.' });
 
@@ -61,9 +61,7 @@ router.post('/', requireAuth, upload.single('audio'), asyncHandler(async (req, r
       data: {
         conversationId,
         senderId: req.user.id,
-        ciphertext: '',
-        nonce,
-        senderPubKey,
+        text: '',
         kind: 'voice',
         voiceNote: {
           create: {
@@ -89,8 +87,6 @@ router.post('/', requireAuth, upload.single('audio'), asyncHandler(async (req, r
     id: message.id,
     conversationId,
     senderId: req.user.id,
-    nonce,
-    senderPubKey,
     kind: 'voice',
     voiceNoteId: message.voiceNote.id,
     durationSec: message.voiceNote.durationSec,
@@ -100,9 +96,9 @@ router.post('/', requireAuth, upload.single('audio'), asyncHandler(async (req, r
   res.status(201).json({ messageId: message.id, voiceNote: publicVoiceNote(message.voiceNote) });
 }));
 
-// Fetches the encrypted audio bytes to decrypt and play client-side.
-// Finishing playback (the client calls this once, when the recipient
-// actually opens/plays it) erases it immediately — the blob AND the row —
+// Fetches the raw audio bytes to play client-side. Finishing playback (the
+// client calls this once, when the recipient actually opens/plays it)
+// erases it immediately — the blob AND the row —
 // rather than soft-deleting and waiting for a cron sweep. The sender can
 // still fetch their own sent note back (e.g. to confirm it went out
 // alright) without consuming it, same convention as images' ONE_TIME view.

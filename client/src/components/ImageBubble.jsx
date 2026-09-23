@@ -1,14 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
-import { decryptBytes } from '../lib/crypto.js';
 
 // Renders a self-destructing image message. Incoming images are fetched
-// and decrypted client-side only when the recipient chooses to open them;
-// the server never has the plaintext. TIMED_10S auto-hides after a 10
-// second countdown, ONE_TIME hides itself the moment it's closed.
-export default function ImageBubble({ message, keyPair, isMine }) {
+// client-side only when the recipient chooses to open them. TIMED_10S
+// auto-hides after a 10 second countdown, ONE_TIME hides itself the
+// moment it's closed.
+export default function ImageBubble({ message, isMine }) {
+  // History rows carry the image's current availability/viewed state (see
+  // routes/images.js publicImage()) so an already-self-destructed image
+  // renders as gone immediately, instead of showing "tap to view" and
+  // then failing on fetch.
+  const alreadyGone = message.image
+    ? message.image.available === false || (message.image.viewMode === 'ONE_TIME' && message.image.viewedComplete && !isMine)
+    : false;
+
   const [opened, setOpened] = useState(false);
-  const [gone, setGone] = useState(false);
+  const [gone, setGone] = useState(alreadyGone);
   const [objectUrl, setObjectUrl] = useState(message.localPreviewUrl || null);
   const [countdown, setCountdown] = useState(null);
   const timerRef = useRef(null);
@@ -20,15 +27,19 @@ export default function ImageBubble({ message, keyPair, isMine }) {
   }, []);
 
   async function open() {
-    if (isMine) {
+    // Only skip the authenticated fetch when we already have a preview —
+    // that's the sender's own just-sent image in the current tab. Reopening
+    // history (no local preview, even for the sender) still fetches for
+    // real, which the server allows for the sender regardless of view mode
+    // (see routes/images.js: only the recipient's view consumes a
+    // ONE_TIME image).
+    if (message.localPreviewUrl) {
       setOpened(true);
       return;
     }
     try {
       const { data } = await api.get(`/images/${message.imageId}/view`, { responseType: 'arraybuffer' });
-      const bytes = decryptBytes(new Uint8Array(data), message.nonce, message.senderPubKey, keyPair.secretKey);
-      if (!bytes) throw new Error('decrypt failed');
-      const blob = new Blob([bytes]);
+      const blob = new Blob([data]);
       const url = URL.createObjectURL(blob);
       setObjectUrl(url);
       setOpened(true);
@@ -69,7 +80,7 @@ export default function ImageBubble({ message, keyPair, isMine }) {
     <div className={`max-w-[75%] rounded-2xl overflow-hidden border ${isMine ? 'border-violet-500/30' : 'border-slate-200 dark:border-white/10'} bg-slate-100 dark:bg-ink-800`}>
       {!opened && (
         <button onClick={open} className="w-full flex flex-col items-center gap-2 px-6 py-8 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors">
-          <span className="text-2xl">🔒</span>
+          <span className="text-2xl">🖼️</span>
           <span className="text-sm text-slate-600 dark:text-slate-300">
             {isMine ? 'Sent' : 'Tap to view'} · {message.viewMode === 'ONE_TIME' ? 'one-time view' : '10-second view'}
           </span>

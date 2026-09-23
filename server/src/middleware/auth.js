@@ -14,6 +14,40 @@ function getClientIp(req) {
   return req.socket?.remoteAddress || null;
 }
 
+// Private/loopback/link-local ranges never resolve to a meaningful
+// location (local dev, or a misconfigured proxy handing us its own
+// address) — skip the lookup outright rather than sending them out and
+// getting back garbage.
+const PRIVATE_IP_RE = /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1$|f[cd][0-9a-f]{2}:|fe80:)/i;
+
+// Best-effort reverse-IP geolocation for the admin-only IP log (see
+// User.lastLocation / IpLog.location in schema.prisma). This is
+// approximate — city-level at best, and sometimes wrong entirely for a
+// VPN, mobile carrier, or CGNAT address — and there is deliberately no
+// browser-GPS alternative here: navigator.geolocation would pop a
+// permission prompt in front of the visitor, which doesn't fit an app
+// that markets itself as anonymous. ipapi.co's free JSON endpoint needs
+// no signup/API key for this volume (a lookup only ever runs when a
+// user's IP actually changes, not on every request); on any error,
+// timeout, or rate limit this just returns null and the caller carries on
+// without a location rather than blocking on it.
+async function lookupIpLocation(ip) {
+  if (!ip || PRIVATE_IP_RE.test(ip)) return null;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`https://ipapi.co/${encodeURIComponent(ip)}/json/`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.error) return null;
+    const parts = [data.city, data.region, data.country_name].filter(Boolean);
+    return parts.length ? parts.join(', ') : null;
+  } catch {
+    return null;
+  }
+}
+
 // Admin-only activity/IP tracking (see the User.lastIp/lastSeenAt and IpLog
 // comments in schema.prisma, and routes/admin.js for the only place this is
 // ever read back). Fire-and-forget on purpose — this rides along on every
@@ -21,19 +55,29 @@ function getClientIp(req) {
 // it's piggybacking on. Throttled so a chatty client doesn't turn into a
 // write on every single API call: the denormalized lastIp/lastSeenAt pair
 // only updates once the previous stamp is a few minutes stale (or the IP
-// itself changed), and a new IpLog row is only appended when the IP
-// actually changed from whatever was last recorded for this user.
+// itself changed), and a new IpLog row — with its own geolocation lookup —
+// is only appended when the IP actually changed from whatever was last
+// recorded for this user.
 const ACTIVITY_THROTTLE_MS = 5 * 60 * 1000;
 function trackActivity(req, user) {
   const ip = getClientIp(req);
   if (!ip) return;
   const stale = !user.lastSeenAt || Date.now() - new Date(user.lastSeenAt).getTime() > ACTIVITY_THROTTLE_MS;
   const ipChanged = user.lastIp !== ip;
-  if (stale || ipChanged) {
-    prisma.user.update({ where: { id: user.id }, data: { lastIp: ip, lastSeenAt: new Date() } }).catch(() => {});
-  }
+  if (!stale && !ipChanged) return;
+
   if (ipChanged) {
-    prisma.ipLog.create({ data: { userId: user.id, ip, userAgent: req.headers['user-agent'] || null } }).catch(() => {});
+    // The geolocation lookup is the only slow part here, so it's the only
+    // part chained onto a promise — everything else about this request
+    // has already moved on by the time it resolves.
+    lookupIpLocation(ip)
+      .then((location) => Promise.all([
+        prisma.user.update({ where: { id: user.id }, data: { lastIp: ip, lastSeenAt: new Date(), lastLocation: location } }),
+        prisma.ipLog.create({ data: { userId: user.id, ip, location, userAgent: req.headers['user-agent'] || null } }),
+      ]))
+      .catch(() => {});
+  } else {
+    prisma.user.update({ where: { id: user.id }, data: { lastSeenAt: new Date() } }).catch(() => {});
   }
 }
 
@@ -62,10 +106,10 @@ export async function requireAuth(req, res, next) {
     // Which of this account's devices is making the request — see
     // client/src/lib/api.js (sent on every request) and
     // client/src/lib/crypto.js (getOrCreateDeviceId, generated once per
-    // browser). Used to pick the right per-device MessageCopy when
-    // fetching history (routes/messages.js). Older clients that predate
-    // multi-device support simply won't send this header; those requests
-    // just fall back to a message's legacy single-copy fields.
+    // browser). Not currently used to branch message content (that scheme
+    // was removed — see the note on Message.text in schema.prisma), but
+    // kept around as a stable per-device identifier in case something
+    // else needs it later (e.g. per-device notification preferences).
     req.deviceId = req.headers['x-device-id'] || null;
     trackActivity(req, user);
     next();

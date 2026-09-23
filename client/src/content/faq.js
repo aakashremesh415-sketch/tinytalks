@@ -22,9 +22,9 @@ export const FAQ_ITEMS = [
       'Yes. You can chat as a guest with no email, phone number, or real name required — guests are given a random display name automatically. Guest accounts and their data are permanently deleted after 2 days.',
   },
   {
-    question: 'Are messages on tinytalks encrypted?',
+    question: 'Are messages on tinytalks private?',
     answer:
-      "Yes. Every message is end-to-end encrypted on your device before it's sent, using the same public-key cryptography (X25519 + XSalsa20-Poly1305) behind apps like Signal. tinytalks' own servers only ever see encrypted ciphertext, never your plaintext messages.",
+      "Messages are only ever visible to you and the person you're chatting with, plus our moderation team in the specific case where one of you submits a report — reviewing reported content is what lets us actually act on abuse instead of operating as a black box.",
   },
   {
     question: 'Can I choose who I match with?',
@@ -34,7 +34,7 @@ export const FAQ_ITEMS = [
   {
     question: 'Can I send photos on tinytalks?',
     answer:
-      'Yes, after a quick, free, ID-free verification step. Photos are end-to-end encrypted and self-destruct after a one-time view or a short timer, so they are not kept around after your chat.',
+      'Yes, after a quick, free, ID-free verification step. Photos self-destruct after a one-time view or a short timer, so they are not kept around after your chat.',
   },
   {
     question: 'Can I add someone as a friend and talk to them again?',

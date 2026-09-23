@@ -149,7 +149,6 @@ model User {
   reportsFiled         Report[]            @relation("ReportsFiled")
   reportsAgainst       Report[]            @relation("ReportsAgainst")
   otpCodes             OtpCode[]
-  publicKeys           PublicKey[]
   blocksMade           BlockedUser[]       @relation("BlockerRel")
   blocksReceived       BlockedUser[]       @relation("BlockedRel")
   reactions            MessageReaction[]
@@ -261,35 +260,6 @@ model OtpCode {
   @@index([userId, purpose])
 }
 
-// Client-generated X25519 public keys for E2E encryption (nacl.box).
-// Private keys NEVER leave the client / are never sent to the server.
-model PublicKey {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  publicKey String   // base64
-
-  // Stable per-browser id (generated once client-side, kept in
-  // localStorage — see client/src/lib/crypto.js's getOrCreateDeviceId)
-  // rather than a login session id, so re-opening the same browser later
-  // updates this same row instead of piling up a new one. Nullable only
-  // for rows written before this column existed — those never get looked
-  // up by deviceId and just sit unused going forward; nothing reads them
-  // by device identity. New rows always carry one, which is how multi-
-  // device message fan-out (see MessageCopy) knows every device to
-  // encrypt a copy for.
-  deviceId  String?
-  createdAt DateTime @default(now())
-  // @default(now()) alongside @updatedAt is what lets this migrate cleanly
-  // onto the 47 existing rows from before this column existed (Prisma
-  // needs a value to backfill them with) — it still auto-updates on every
-  // write from here on, exactly like a plain @updatedAt would.
-  updatedAt DateTime @default(now()) @updatedAt
-
-  @@unique([userId, deviceId])
-  @@index([userId])
-}
-
 model Conversation {
   id             String    @id @default(uuid())
   participantAId String
@@ -324,36 +294,19 @@ model Message {
   senderId       String
   sender         User         @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
 
-  // Legacy single-copy E2E payload — still populated for image messages
-  // (Image itself carries the real encrypted bytes in Blob storage; these
-  // stay as metadata) and left as '' for text/sticker/gif messages sent
-  // after multi-device fan-out shipped, since those store one ciphertext
-  // PER DEVICE in `copies` below instead of a single shared one here. Kept
-  // (rather than dropped) so messages sent before that migration remain
-  // readable by whichever single device originally received them.
-  ciphertext     String
-  nonce          String
-  // The SENDING device's public key. Every MessageCopy below was
-  // encrypted from that same sending device to a different target
-  // device's public key, so any recipient decrypts their own copy with
-  // nacl.box.open(copy.ciphertext, copy.nonce, senderPubKey, myOwnSecretKey)
-  // — one shared field here regardless of how many copies exist.
-  senderPubKey   String
-
-  // One row per device (the recipient's, AND the sender's own other
-  // devices) this message was fanned out to — see routes/messages.js
-  // /send. Lets the same conversation be read from more than one signed-in
-  // device: each device fetches history filtered to its own deviceId
-  // instead of relying on one universal ciphertext only one device holds
-  // the key for. Not used for image messages (still single-device only —
-  // self-destruct/view-once semantics get a lot messier per-device).
-  copies         MessageCopy[]
+  // Plain text content, stored and readable directly by the server — this
+  // app used to be end-to-end encrypted (client-side nacl.box; the server
+  // only ever saw ciphertext), but that was removed: it caused permanent
+  // "Could not decrypt" messages whenever a device's key rotated or a
+  // second device signed in, was the source of most of this app's hardest
+  // bugs, and it's since decided that admin moderation being able to read
+  // reported message content matters more than the server itself being
+  // unable to. Empty string for non-text kinds (image/voice), same
+  // convention the old ciphertext field used; a sticker's "text" is its id
+  // (e.g. "fire") and a GIF's is its CDN URL.
+  text           String @default("")
 
   // Set when the sender edits a text message (see PATCH /messages/:id).
-  // Editing re-encrypts client-side and simply overwrites
-  // ciphertext/nonce/senderPubKey above with the new payload — the server
-  // never sees plaintext either way — and stamps this so both sides can
-  // show an "edited" hint without needing a separate edit-history table.
   editedAt       DateTime?
 
   kind           String       @default("text") // "text" | "image" | "sticker" | "gif" | "voice"
@@ -385,10 +338,10 @@ model Message {
 // (message, user); reacting again with a different emoji replaces it
 // rather than stacking a second one (see the upsert in routes/messages.js
 // POST /:messageId/reactions), same convention most chat apps use.
-// Reactions are plaintext (just an emoji, no message content), so unlike
-// everything else here they're NOT E2E encrypted — the server can read and
-// aggregate them directly, which is what lets it just send a
-// {emoji: count} summary instead of every individual reaction.
+// Just an emoji, no message content — the server reads and aggregates
+// these directly, same as everything else now (see the note on
+// Message.text above), which is what lets it send a {emoji: count}
+// summary instead of every individual reaction.
 model MessageReaction {
   id        String   @id @default(uuid())
   messageId String
@@ -402,33 +355,17 @@ model MessageReaction {
   @@index([messageId])
 }
 
-// A single device's encrypted copy of a text/sticker/gif Message — see the
-// comment on Message.copies above for why this exists. `deviceId` matches
-// PublicKey.deviceId; ciphertext/nonce are that message's plaintext
-// re-encrypted (fresh nonce per copy) for this specific device's public
-// key, from the sending device's secret key.
-model MessageCopy {
-  id         String   @id @default(uuid())
-  messageId  String
-  message    Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  deviceId   String
-  ciphertext String
-  nonce      String
-  createdAt  DateTime @default(now())
-
-  @@unique([messageId, deviceId])
-  @@index([messageId])
-  @@index([deviceId])
-}
-
 model Image {
   id                String        @id @default(uuid())
   messageId         String        @unique
   message           Message       @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
-  // The file itself is stored encrypted-at-rest is out of scope for this
-  // MVP; the file on disk is the ciphertext blob the client encrypted
-  // before upload (server cannot render it without the recipient's key).
+  // Raw image bytes in Vercel Blob — encryption-at-rest for the storage
+  // layer itself is out of scope for this MVP (Neon/Vercel Blob's own
+  // infra-level protections aside); the app no longer encrypts the file
+  // client-side (see the note on Message.text above), so admin moderation
+  // can actually view a reported image, which the old ciphertext-blob
+  // scheme never actually allowed despite the moderation route existing.
   storagePath       String
   viewMode          ImageViewMode
 
@@ -445,14 +382,12 @@ model Image {
   @@index([hardDeleteAt])
 }
 
-// A voice note — single-device only, like Image (see routes/voiceNotes.js):
-// encrypted once for whichever key was "latest" for the recipient at
-// upload time, not fanned out per MessageCopy. That's actually the right
-// call here, not just the simple one: "erase after listening" is a
-// single-consumption guarantee, and fanning the same secret out to every
-// device would make "after listening" ambiguous — does the first device
-// to open it erase it for the others too? Keeping it single-device avoids
-// that question entirely. Erasure happens immediately the moment the
+// A voice note (see routes/voiceNotes.js). "Erase after listening" is a
+// single-consumption guarantee, so this stays single-device rather than
+// readable from anywhere the recipient is signed in — fanning it out to
+// every device would make "after listening" ambiguous (does the first
+// device to open it erase it for the others too?). Erasure happens
+// immediately the moment the
 // RECIPIENT (not the sender re-checking their own sent note) finishes
 // listening — see GET /:voiceNoteId/listen — rather than waiting for a
 // cron sweep; hardDeleteAt is only a safety net for one that's never
@@ -462,7 +397,7 @@ model VoiceNote {
   messageId     String    @unique
   message       Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
-  storagePath   String        // ciphertext blob in Vercel Blob, same as Image
+  storagePath   String        // raw audio bytes in Vercel Blob, same as Image
   durationSec   Int?          // best-effort, client-reported — just for the little duration label in the UI
 
   uploadedAt    DateTime  @default(now())

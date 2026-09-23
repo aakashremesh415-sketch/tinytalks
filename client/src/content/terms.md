@@ -114,8 +114,9 @@ accordingly.
 - Age-estimation selfies are processed by our verification vendor and are
   not retained by tinytalks; we store only the resulting pass/fail
   outcome.
-- Messages are end-to-end encrypted; we cannot read their content, and do
-  not store encryption keys.
+- Messages are stored on our servers and are not reviewed except when a
+  conversation is the subject of a user report submitted by you or the
+  other participant, for the purpose of investigating that report.
 - Images follow the retention schedule in Section 4.
 - Banned-user records are retained indefinitely in hashed form for abuse
   prevention.

@@ -15,23 +15,7 @@ const router = Router();
 // wants, whether or not the other is currently online. This route (fixed
 // path, so it must be registered before the /:conversationId param route
 // below, or Express would try to treat "conversations" as an id) lists
-// them with the single latest message for a sidebar preview; the client
-// decrypts that preview itself since only ciphertext lives here.
-// Picks whichever ciphertext/nonce THIS requesting device can actually
-// decrypt: its own MessageCopy if this message was fanned out (see /send
-// below), falling back to the message's own legacy fields for anything
-// sent before multi-device support existed (readable only by whichever
-// single device originally handled it — unchanged, pre-existing behavior).
-function resolveForDevice(message, deviceId) {
-  const mine = deviceId && message.copies
-    ? message.copies.find((c) => c.deviceId === deviceId)
-    : null;
-  return {
-    ciphertext: mine ? mine.ciphertext : message.ciphertext,
-    nonce: mine ? mine.nonce : message.nonce,
-  };
-}
-
+// them with the single latest message for a sidebar preview.
 router.get('/conversations', requireAuth, asyncHandler(async (req, res) => {
   const userId = req.user.id;
   const conversations = await prisma.conversation.findMany({
@@ -39,7 +23,7 @@ router.get('/conversations', requireAuth, asyncHandler(async (req, res) => {
     orderBy: { createdAt: 'desc' },
     take: 50,
     include: {
-      messages: { orderBy: { createdAt: 'desc' }, take: 1, include: { copies: true } },
+      messages: { orderBy: { createdAt: 'desc' }, take: 1 },
       participantA: { select: { id: true, displayName: true } },
       participantB: { select: { id: true, displayName: true } },
     },
@@ -49,7 +33,6 @@ router.get('/conversations', requireAuth, asyncHandler(async (req, res) => {
     conversations: conversations.map((c) => {
       const partner = c.participantAId === userId ? c.participantB : c.participantA;
       const last = c.messages[0] || null;
-      const resolved = last ? resolveForDevice(last, req.deviceId) : null;
       return {
         id: c.id,
         partnerId: partner.id,
@@ -59,9 +42,7 @@ router.get('/conversations', requireAuth, asyncHandler(async (req, res) => {
         lastMessage: last && {
           id: last.id,
           kind: last.kind,
-          ciphertext: resolved.ciphertext,
-          nonce: resolved.nonce,
-          senderPubKey: last.senderPubKey,
+          text: last.text,
           senderId: last.senderId,
           createdAt: last.createdAt,
         },
@@ -87,59 +68,43 @@ router.get('/:conversationId', requireAuth, asyncHandler(async (req, res) => {
   const messages = await prisma.message.findMany({
     where: { conversationId: req.params.conversationId },
     orderBy: { createdAt: 'asc' },
-    include: { image: true, voiceNote: true, copies: true },
+    include: { image: true, voiceNote: true, reactions: true },
   });
 
   res.json({
     conversationId: conversation.id,
     partnerId,
     endedAt: conversation.endedAt,
-    messages: messages.map((m) => {
-      const resolved = resolveForDevice(m, req.deviceId);
-      return {
-        id: m.id,
-        kind: m.kind,
-        ciphertext: resolved.ciphertext,
-        nonce: resolved.nonce,
-        senderPubKey: m.senderPubKey,
-        senderId: m.senderId,
-        replyToId: m.replyToId,
-        editedAt: m.editedAt,
-        createdAt: m.createdAt,
-        image: m.image ? publicImage(m.image) : null,
-        voiceNote: m.voiceNote ? publicVoiceNote(m.voiceNote) : null,
-      };
-    }),
+    messages: messages.map((m) => ({
+      id: m.id,
+      kind: m.kind,
+      text: m.text,
+      senderId: m.senderId,
+      replyToId: m.replyToId,
+      editedAt: m.editedAt,
+      createdAt: m.createdAt,
+      image: m.image ? publicImage(m.image) : null,
+      voiceNote: m.voiceNote ? publicVoiceNote(m.voiceNote) : null,
+      reactions: m.reactions,
+    })),
   });
 }));
 
-// Relay of an already-E2E-encrypted text/sticker/gif message (replaces the
-// old Socket.io 'message:send' handler). The server never sees
-// plaintext — every copy in `copies` was produced client-side with
-// nacl.box, from the sending device's secret key to one target device's
-// published public key (see client/src/lib/crypto.js's
-// encryptForDevices). The client is expected to have already fanned this
-// out to every one of the recipient's devices AND its own other devices
-// (via GET /keys/:userId/all for both sides) — this route just persists
-// whatever copies it's handed; it has no way to tell if one was missed.
+// Sends a text/sticker/GIF message. This used to relay pre-encrypted
+// per-device ciphertext — the app is no longer end-to-end encrypted, so
+// this just takes plain text directly and stores it as-is; the server can
+// read every message, which is what lets admin moderation actually see
+// reported content.
 //
 // Notifies BOTH participants' private-user-<id> Pusher channels (not just
-// the partner, like the old single-device version did) — every one of a
-// user's signed-in devices shares that same channel, so this is what
-// makes a message show up live on the sender's OTHER devices too, not
-// just on next reload. The full `copies` array rides along in the push
-// payload (small — a handful of devices, short ciphertexts) so each
-// receiving device can pick out its own without a round trip.
+// the partner) — every one of a user's signed-in devices/tabs shares that
+// same channel, so a message shows up live everywhere the sender is signed
+// in too, not just on next reload.
 router.post('/send', requireAuth, asyncHandler(async (req, res) => {
-  const { conversationId, senderPubKey, kind, replyToId, copies } = req.body;
+  const { conversationId, text, kind, replyToId } = req.body;
 
-  if (!conversationId || !senderPubKey || !Array.isArray(copies) || copies.length === 0) {
-    return res.status(400).json({ error: 'conversationId, senderPubKey and a non-empty copies array are required.' });
-  }
-  for (const c of copies) {
-    if (!c.deviceId || !c.ciphertext || !c.nonce) {
-      return res.status(400).json({ error: 'Each copy needs deviceId, ciphertext and nonce.' });
-    }
+  if (!conversationId || !text) {
+    return res.status(400).json({ error: 'conversationId and text are required.' });
   }
 
   const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
@@ -163,12 +128,9 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     data: {
       conversationId,
       senderId: req.user.id,
-      ciphertext: '',
-      nonce: '',
-      senderPubKey,
+      text,
       kind: kind || 'text',
       replyToId: validReplyToId,
-      copies: { create: copies.map((c) => ({ deviceId: c.deviceId, ciphertext: c.ciphertext, nonce: c.nonce })) },
     },
   });
 
@@ -180,36 +142,26 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     id: message.id,
     conversationId,
     senderId: req.user.id,
-    senderPubKey,
+    text: message.text,
     kind: message.kind,
     replyToId: message.replyToId,
     createdAt: message.createdAt,
-    copies,
   };
   await Promise.all([
     notifyUser(partnerId, 'message:new', payload),
     notifyUser(req.user.id, 'message:new', payload),
   ]);
 
-  res.status(201).json({ ok: true, messageId: message.id, replyToId: message.replyToId });
+  res.status(201).json({ ok: true, messageId: message.id, replyToId: message.replyToId, createdAt: message.createdAt });
 }));
 
-// Editing a sent text message — the client re-encrypts the new text for
-// every device again (same fan-out as /send) and PATCHes the result over;
-// the server just replaces this message's MessageCopy rows and stamps
-// editedAt, never seeing plaintext at any point. Only the original sender
-// may edit, and only text messages (a sticker/GIF's "text" is an id/URL,
-// not something a person edits; an image's ciphertext is the photo
-// itself).
+// Editing a sent text message — only the original sender may edit, and
+// only text messages (a sticker/GIF's "text" is an id/URL, not something a
+// person edits; an image's storagePath is the photo itself).
 router.patch('/:messageId', requireAuth, asyncHandler(async (req, res) => {
-  const { senderPubKey, copies } = req.body;
-  if (!senderPubKey || !Array.isArray(copies) || copies.length === 0) {
-    return res.status(400).json({ error: 'senderPubKey and a non-empty copies array are required.' });
-  }
-  for (const c of copies) {
-    if (!c.deviceId || !c.ciphertext || !c.nonce) {
-      return res.status(400).json({ error: 'Each copy needs deviceId, ciphertext and nonce.' });
-    }
+  const { text } = req.body;
+  if (!text) {
+    return res.status(400).json({ error: 'text is required.' });
   }
 
   const message = await prisma.message.findUnique({ where: { id: req.params.messageId } });
@@ -228,20 +180,13 @@ router.patch('/:messageId', requireAuth, asyncHandler(async (req, res) => {
     : conversation.participantAId;
 
   const editedAt = new Date();
-  const [updated] = await prisma.$transaction([
-    prisma.message.update({ where: { id: message.id }, data: { senderPubKey, editedAt } }),
-    prisma.messageCopy.deleteMany({ where: { messageId: message.id } }),
-    prisma.messageCopy.createMany({
-      data: copies.map((c) => ({ messageId: message.id, deviceId: c.deviceId, ciphertext: c.ciphertext, nonce: c.nonce })),
-    }),
-  ]);
+  const updated = await prisma.message.update({ where: { id: message.id }, data: { text, editedAt } });
 
   const payload = {
     id: updated.id,
     conversationId: updated.conversationId,
-    senderPubKey: updated.senderPubKey,
+    text: updated.text,
     editedAt: updated.editedAt,
-    copies,
   };
   await Promise.all([
     notifyUser(partnerId, 'message:edited', payload),
@@ -251,19 +196,16 @@ router.patch('/:messageId', requireAuth, asyncHandler(async (req, res) => {
   res.json({ ok: true, editedAt: updated.editedAt });
 }));
 
-// Wipes every message in a conversation outright. The practical fix for
-// old messages permanently stuck showing "Could not decrypt": once a
-// device's key has rotated (localStorage cleared, a fresh browser, an old
-// pre-multi-device message whose one-and-only holder is gone) the
-// ciphertext encrypted for that old key is unreadable forever — the server
-// never had the plaintext to re-encrypt from, so there's no way to
-// "repair" these, only to clear them out. Either participant can do this
-// for their shared conversation; it's a hard delete of the Message rows
-// (cascading to Image/VoiceNote/MessageCopy via onDelete: Cascade in
+// Wipes every message in a conversation outright. Originally built as the
+// fix for old E2E messages permanently stuck showing "Could not decrypt";
+// kept now that encryption is gone as a general "start this conversation
+// over" tool. Either participant can do this for their shared
+// conversation; it's a hard delete of the Message rows (cascading to
+// Image/VoiceNote/MessageReaction via onDelete: Cascade in
 // schema.prisma), not a soft per-user hide — it clears the history for
-// BOTH sides, same as if the conversation just started over. Both
-// participants are notified live so an already-open chat window clears
-// immediately instead of showing stale messages until a refresh.
+// BOTH sides. Both participants are notified live so an already-open chat
+// window clears immediately instead of showing stale messages until a
+// refresh.
 router.delete('/:conversationId/history', requireAuth, asyncHandler(async (req, res) => {
   const conversation = await prisma.conversation.findUnique({ where: { id: req.params.conversationId } });
   if (!conversation) return res.status(404).json({ error: 'Conversation not found.' });
@@ -281,6 +223,94 @@ router.delete('/:conversationId/history', requireAuth, asyncHandler(async (req, 
     notifyUser(req.user.id, 'conversation:cleared', { conversationId: conversation.id }),
   ]);
 
+  res.json({ ok: true });
+}));
+
+// --- Reactions (see MessageReaction in schema.prisma) — a single reaction
+// per (message, user); reacting again replaces the previous one. ---
+router.put('/:messageId/reactions', requireAuth, asyncHandler(async (req, res) => {
+  const { emoji } = req.body;
+  if (!emoji) return res.status(400).json({ error: 'emoji is required.' });
+
+  const message = await prisma.message.findUnique({ where: { id: req.params.messageId } });
+  if (!message) return res.status(404).json({ error: 'Message not found.' });
+  const conversation = await prisma.conversation.findUnique({ where: { id: message.conversationId } });
+  if (!conversation || ![conversation.participantAId, conversation.participantBId].includes(req.user.id)) {
+    return res.status(403).json({ error: 'Not a participant in this conversation.' });
+  }
+
+  await prisma.messageReaction.upsert({
+    where: { messageId_userId: { messageId: message.id, userId: req.user.id } },
+    update: { emoji },
+    create: { messageId: message.id, userId: req.user.id, emoji },
+  });
+
+  const partnerId = conversation.participantAId === req.user.id
+    ? conversation.participantBId
+    : conversation.participantAId;
+  const payload = { messageId: message.id, conversationId: message.conversationId, userId: req.user.id, emoji };
+  await Promise.all([
+    notifyUser(partnerId, 'message:reaction', payload),
+    notifyUser(req.user.id, 'message:reaction', payload),
+  ]);
+
+  res.json({ ok: true });
+}));
+
+router.delete('/:messageId/reactions', requireAuth, asyncHandler(async (req, res) => {
+  const message = await prisma.message.findUnique({ where: { id: req.params.messageId } });
+  if (!message) return res.status(404).json({ error: 'Message not found.' });
+  const conversation = await prisma.conversation.findUnique({ where: { id: message.conversationId } });
+  if (!conversation || ![conversation.participantAId, conversation.participantBId].includes(req.user.id)) {
+    return res.status(403).json({ error: 'Not a participant in this conversation.' });
+  }
+
+  await prisma.messageReaction.deleteMany({ where: { messageId: message.id, userId: req.user.id } });
+
+  const partnerId = conversation.participantAId === req.user.id
+    ? conversation.participantBId
+    : conversation.participantAId;
+  const payload = { messageId: message.id, conversationId: message.conversationId, userId: req.user.id, emoji: null };
+  await Promise.all([
+    notifyUser(partnerId, 'message:reaction', payload),
+    notifyUser(req.user.id, 'message:reaction', payload),
+  ]);
+
+  res.json({ ok: true });
+}));
+
+// --- Read receipts (see Conversation.lastReadAtA/B in schema.prisma). ---
+router.post('/:conversationId/read', requireAuth, asyncHandler(async (req, res) => {
+  const conversation = await prisma.conversation.findUnique({ where: { id: req.params.conversationId } });
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found.' });
+  const isA = conversation.participantAId === req.user.id;
+  const isB = conversation.participantBId === req.user.id;
+  if (!isA && !isB) return res.status(403).json({ error: 'Not a participant in this conversation.' });
+
+  const readAt = new Date();
+  await prisma.conversation.update({
+    where: { id: conversation.id },
+    data: isA ? { lastReadAtA: readAt } : { lastReadAtB: readAt },
+  });
+
+  const partnerId = isA ? conversation.participantBId : conversation.participantAId;
+  await notifyUser(partnerId, 'conversation:read', { conversationId: conversation.id, readAt, by: req.user.id });
+
+  res.json({ ok: true, readAt });
+}));
+
+// --- Typing indicator — purely ephemeral, no persistence at all; just a
+// relay to the partner so their UI can show "X is typing…" for a few
+// seconds. ---
+router.post('/:conversationId/typing', requireAuth, asyncHandler(async (req, res) => {
+  const conversation = await prisma.conversation.findUnique({ where: { id: req.params.conversationId } });
+  if (!conversation || ![conversation.participantAId, conversation.participantBId].includes(req.user.id)) {
+    return res.status(403).json({ error: 'Not a participant in this conversation.' });
+  }
+  const partnerId = conversation.participantAId === req.user.id
+    ? conversation.participantBId
+    : conversation.participantAId;
+  await notifyUser(partnerId, 'typing', { conversationId: conversation.id, userId: req.user.id });
   res.json({ ok: true });
 }));
 

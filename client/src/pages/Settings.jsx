@@ -331,9 +331,9 @@ function PrivacyTab() {
     <div>
       <h2 className="font-display font-bold text-lg mb-3">Privacy</h2>
       <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
-        tinytalks never collects your location or contacts, and messages are end-to-end encrypted — we
-        can't read them even if we wanted to. Location tags and interests are entirely optional and
-        self-reported.
+        tinytalks never collects your location or contacts. Location tags and interests are entirely
+        optional and self-reported. Messages are stored securely and are only ever reviewed by our
+        moderation team when you or the other person submits a report.
       </p>
 
       <div className="rounded-xl border border-coral-500/30 p-4">

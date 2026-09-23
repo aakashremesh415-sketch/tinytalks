@@ -12,18 +12,8 @@ import ViewToggle from '../components/ViewToggle.jsx';
 import { api, getErrorMessage } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useRealtime } from '../lib/realtime.jsx';
-import { cacheSentPlaintext, getCachedSentPlaintext } from '../lib/sentCache.js';
 import { applyEmojiShortcuts } from '../lib/emojiShortcuts.js';
 import { useSeo } from '../lib/seo.js';
-import {
-  loadOrCreateKeyPair,
-  publicKeyToBase64,
-  encryptText,
-  decryptText,
-  encryptBytes,
-  getOrCreateDeviceId,
-  encryptForDevices,
-} from '../lib/crypto.js';
 
 // Gender symbols instead of a plain dropdown — matches the icon-button
 // style people expect from stranger-chat apps, while keeping the same
@@ -46,40 +36,11 @@ function bumpConversation(list, id, lastMessage) {
   return [updated, ...rest];
 }
 
-// Retries a device-key lookup a few times — mirrors fetchPartnerKeyWithRetry
-// below, for the same reason: a partner who was JUST matched with, or who
-// just opened the app for the first time this session, may not have hit
-// /keys/publish yet when we go to send.
-async function fetchAllDeviceKeys(userId, attempts = 5) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const { data } = await api.get(`/keys/${userId}/all`);
-      if (data.devices && data.devices.length > 0) return data.devices;
-    } catch {
-      // fall through to retry
-    }
-    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 400));
-  }
-  return [];
-}
-
-// Every device that should get its own encrypted copy of an outgoing
-// text/sticker/GIF message: the partner's devices (so any of their signed-in
-// browsers can read it) plus this account's OTHER devices (so switching
-// devices later doesn't strand new messages on whichever one sent them) —
-// but never THIS device, which already has the plaintext in hand from
-// composing it (see sentCache.js instead, used for viewing it back later).
-// Fetched live at send time, deliberately not cached, so a device that just
-// registered gets included in the very next message sent.
-async function fetchSendTargets(partnerId, myUserId, myDeviceId) {
-  const [partnerDevices, myDevices] = await Promise.all([
-    fetchAllDeviceKeys(partnerId),
-    fetchAllDeviceKeys(myUserId, 2),
-  ]);
-  return [...partnerDevices, ...myDevices.filter((d) => d.deviceId !== myDeviceId)];
-}
-
-function decodeHistoryMessage(m, myUserId, keyPair) {
+// Reshapes one server history row into what MessageBubble/ImageBubble/
+// VoiceNoteBubble expect — this used to also decrypt ciphertext client-side
+// (per-device, via the removed nacl.box scheme); the server now sends
+// plain text directly, so this is just a field remap.
+function decodeHistoryMessage(m, myUserId) {
   const incoming = m.senderId !== myUserId;
   if (m.kind === 'image') {
     return {
@@ -88,8 +49,6 @@ function decodeHistoryMessage(m, myUserId, keyPair) {
       imageId: m.image?.id,
       viewMode: m.image?.viewMode,
       image: m.image,
-      nonce: m.nonce,
-      senderPubKey: m.senderPubKey,
       replyToId: m.replyToId || null,
       incoming,
       createdAt: m.createdAt,
@@ -103,26 +62,16 @@ function decodeHistoryMessage(m, myUserId, keyPair) {
       // see routes/voiceNotes.js publicVoiceNote()); VoiceNoteBubble reads
       // that directly as "played"/unavailable.
       voiceNote: m.voiceNote,
-      nonce: m.nonce,
-      senderPubKey: m.senderPubKey,
       replyToId: m.replyToId || null,
       incoming,
       createdAt: m.createdAt,
     };
   }
-  // Text, stickers and GIFs all flow through the same ciphertext/nonce
-  // columns — a sticker's "text" is just its id (e.g. "fire"), a GIF's is
-  // its CDN URL — so they share this same decode path; `m.kind` (not a
-  // hardcoded 'text') is what tells MessageBubble how to render it.
-  if (!incoming) {
-    // My own historical message — the server never stored plaintext, and
-    // nacl.box needs the recipient's key (not mine) to re-derive it, so
-    // this only works if I sent it from this same browser (see sentCache.js).
-    const cached = getCachedSentPlaintext(m.id);
-    return { id: m.id, kind: m.kind, plaintext: cached, replyToId: m.replyToId || null, editedAt: m.editedAt || null, incoming: false, createdAt: m.createdAt };
-  }
-  const text = decryptText(m.ciphertext, m.nonce, m.senderPubKey, keyPair.secretKey);
-  return { id: m.id, kind: m.kind, plaintext: text, replyToId: m.replyToId || null, editedAt: m.editedAt || null, incoming: true, createdAt: m.createdAt };
+  // Text, stickers and GIFs all flow through the same `text` column — a
+  // sticker's "text" is just its id (e.g. "fire"), a GIF's is its CDN URL
+  // — so they share this same decode path; `m.kind` (not a hardcoded
+  // 'text') is what tells MessageBubble how to render it.
+  return { id: m.id, kind: m.kind, plaintext: m.text, replyToId: m.replyToId || null, editedAt: m.editedAt || null, incoming, createdAt: m.createdAt };
 }
 
 // A failed send used to only ever show up in the browser console — from
@@ -130,10 +79,7 @@ function decodeHistoryMessage(m, myUserId, keyPair) {
 // draft box with no explanation. This gives the visible banner above the
 // composer something concrete to say instead of a generic "something went
 // wrong".
-function describeSendError(err) {
-  if (err?.message === 'No recipient devices available yet.') {
-    return "Couldn't reach the other person's device yet — try again in a moment.";
-  }
+function describeSendError() {
   return "Couldn't send that — please try again.";
 }
 
@@ -169,7 +115,6 @@ export default function Chat() {
   const { user, logout } = useAuth();
   const { onlineUserIds, userChannel: channel, presenceReady } = useRealtime();
   const navigate = useNavigate();
-  const keyPairRef = useRef(null);
   const activeConversationIdRef = useRef(null); // read inside the Pusher handlers bound once at mount
   const conversationsRef = useRef([]); // same reason — lets the presence handlers below see the current list without re-binding
   const prevOnlineRef = useRef(null); // last onlineUserIds snapshot, to diff for disconnect/reconnect notices
@@ -178,7 +123,6 @@ export default function Chat() {
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [messagesByConv, setMessagesByConv] = useState({});
-  const [partnerKeyByConv, setPartnerKeyByConv] = useState({});
   const [historyLoading, setHistoryLoading] = useState(false);
   const [conversationGone, setConversationGone] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -211,7 +155,7 @@ export default function Chat() {
   const isAdmin = user?.accountType === 'ADMIN';
   const activeConv = conversations.find((c) => c.id === activeConversationId) || null;
   const activeMessages = messagesByConv[activeConversationId] || [];
-  const canSend = Boolean(activeConversationId && partnerKeyByConv[activeConversationId]);
+  const canSend = Boolean(activeConversationId);
 
   useSeo({ title: 'Chat — tinytalks.live', noindex: true, path: '/chat' });
 
@@ -230,12 +174,6 @@ export default function Chat() {
   }, [view, activeConversationId]);
 
   useEffect(() => {
-    keyPairRef.current = loadOrCreateKeyPair();
-
-    api.post('/keys/publish', {
-      publicKey: publicKeyToBase64(keyPairRef.current.publicKey),
-      deviceId: getOrCreateDeviceId(),
-    }).catch(() => {});
     api.get('/messages/conversations')
       .then(({ data }) => {
         const list = data.conversations.map((c) => ({ ...c, hasUnread: false }));
@@ -283,7 +221,6 @@ export default function Chat() {
     const onMessage = (msg) => {
       const isActive = msg.conversationId === activeConversationIdRef.current;
       const incoming = msg.senderId !== user.id;
-      const myDeviceId = getOrCreateDeviceId();
 
       setMessagesByConv((prev) => {
         const existing = prev[msg.conversationId] || [];
@@ -298,30 +235,12 @@ export default function Chat() {
         let plaintext;
         let voiceNote;
         if (msg.kind === 'image') {
-          plaintext = undefined; // ImageBubble manages its own decrypt-on-open flow
+          plaintext = undefined; // ImageBubble manages its own fetch-on-open flow
         } else if (msg.kind === 'voice') {
           plaintext = undefined;
           voiceNote = { id: msg.voiceNoteId, durationSec: msg.durationSec };
         } else {
-          // Pick out the copy fanned out to THIS device (see
-          // encryptForDevices/fetchSendTargets) and decrypt with it; a
-          // message from a not-yet-upgraded build with no `copies` array
-          // falls back to the legacy top-level fields, same as the
-          // server's own resolveForDevice does for history.
-          const mine = Array.isArray(msg.copies) ? msg.copies.find((c) => c.deviceId === myDeviceId) : null;
-          if (!incoming && !mine) {
-            // Our own send, echoed to our other devices — this fan-out never
-            // targets the sending device itself (it already has the
-            // plaintext from composing it), so fall back to the same local
-            // cache used for viewing our own sent history.
-            plaintext = getCachedSentPlaintext(msg.id);
-          } else {
-            const ciphertext = mine ? mine.ciphertext : msg.ciphertext;
-            const nonce = mine ? mine.nonce : msg.nonce;
-            plaintext = ciphertext && nonce
-              ? decryptText(ciphertext, nonce, msg.senderPubKey, keyPairRef.current.secretKey)
-              : null;
-          }
+          plaintext = msg.text;
         }
 
         return {
@@ -331,7 +250,7 @@ export default function Chat() {
       });
       setConversations((prev) => {
         const bumped = bumpConversation(prev, msg.conversationId, {
-          id: msg.id, kind: msg.kind, senderPubKey: msg.senderPubKey, senderId: msg.senderId, createdAt: msg.createdAt,
+          id: msg.id, kind: msg.kind, text: msg.text, senderId: msg.senderId, createdAt: msg.createdAt,
         });
         if (bumped === prev) {
           // A message for a conversation we don't have listed yet (e.g. a
@@ -346,26 +265,20 @@ export default function Chat() {
     };
 
     // A text message got edited — either by the partner, or echoed back to
-    // our own other devices after we ourselves edited it. Resolves the same
-    // per-device `copies` array /send uses; if this is the device that made
-    // the edit, saveEdit() already applied the new plaintext locally, so
-    // there's nothing left to decrypt here.
+    // our own other devices/tabs after we ourselves edited it (see
+    // server/src/routes/messages.js PATCH /:messageId — notifies both
+    // participants). If this is the tab that made the edit, saveEdit()
+    // already applied the new text locally, but re-applying it here from
+    // the server's own copy is harmless and keeps every tab consistent.
     const onEdited = (msg) => {
-      const myDeviceId = getOrCreateDeviceId();
       setMessagesByConv((prev) => {
         const list = prev[msg.conversationId];
         if (!list) return prev;
         return {
           ...prev,
-          [msg.conversationId]: list.map((m) => {
-            if (m.id !== msg.id) return m;
-            const mine = Array.isArray(msg.copies) ? msg.copies.find((c) => c.deviceId === myDeviceId) : null;
-            if (!m.incoming && !mine) return { ...m, editedAt: msg.editedAt };
-            const plaintext = mine
-              ? decryptText(mine.ciphertext, mine.nonce, msg.senderPubKey, keyPairRef.current.secretKey)
-              : m.plaintext;
-            return { ...m, senderPubKey: msg.senderPubKey, plaintext, editedAt: msg.editedAt };
-          }),
+          [msg.conversationId]: list.map((m) => (
+            m.id === msg.id ? { ...m, plaintext: msg.text, editedAt: msg.editedAt } : m
+          )),
         };
       });
     };
@@ -488,18 +401,6 @@ export default function Chat() {
     setShowJumpToBottom(false);
   }
 
-  async function fetchPartnerKeyWithRetry(pid, attempts = 6) {
-    for (let i = 0; i < attempts; i++) {
-      try {
-        const { data } = await api.get(`/keys/${pid}/latest`);
-        return data.publicKey;
-      } catch {
-        await new Promise((r) => setTimeout(r, 400));
-      }
-    }
-    return null;
-  }
-
   function refreshConversationsQuiet() {
     setTimeout(async () => {
       try {
@@ -598,9 +499,6 @@ export default function Chat() {
     setSidebarOpen(false);
     setQueueStatus('idle');
     refreshConversationsQuiet();
-
-    const key = await fetchPartnerKeyWithRetry(pid);
-    setPartnerKeyByConv((prev) => ({ ...prev, [cid]: key }));
   }
 
   async function openConversation(id) {
@@ -615,12 +513,8 @@ export default function Chat() {
     setHistoryLoading(true);
     try {
       const { data } = await api.get(`/messages/${id}`);
-      const decoded = data.messages.map((m) => decodeHistoryMessage(m, user.id, keyPairRef.current));
+      const decoded = data.messages.map((m) => decodeHistoryMessage(m, user.id));
       setMessagesByConv((prev) => ({ ...prev, [id]: decoded }));
-      if (!partnerKeyByConv[id]) {
-        const key = await fetchPartnerKeyWithRetry(data.partnerId);
-        setPartnerKeyByConv((prev) => ({ ...prev, [id]: key }));
-      }
     } catch (err) {
       console.error(err);
       if (err.response?.status === 404) {
@@ -664,15 +558,14 @@ export default function Chat() {
   }
 
   const [clearBusy, setClearBusy] = useState(false);
-  // Old messages that can never decrypt (the device that held the only key
-  // for them is gone — a rotated key, a cleared browser, a message from
-  // before multi-device fan-out existed) have no fix but removal; the
-  // server never has plaintext to re-encrypt from. This wipes the
-  // conversation's history outright for BOTH participants, not just
-  // hiding it locally.
+  // Wipes the conversation's history outright for BOTH participants, not
+  // just hiding it locally — a general "start this conversation over" tool
+  // (it used to also be the only fix for old messages encrypted under a
+  // key that no longer existed anywhere; that scheme is gone now, but the
+  // button's still useful).
   async function clearHistory() {
     if (!activeConv) return;
-    if (!window.confirm("Clear this conversation's history for both of you? Old messages that can't be decrypted have no other fix, but this removes everything — including messages that do still work. This can't be undone.")) return;
+    if (!window.confirm("Clear this conversation's history for both of you? This removes every message and can't be undone.")) return;
     setClearBusy(true);
     try {
       await api.delete(`/messages/${activeConv.id}/history`);
@@ -708,24 +601,18 @@ export default function Chat() {
     const text = applyEmojiShortcuts(draft.trim());
     if (!text || !activeConversationId || !activeConv) return;
 
-    const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
     const replyTarget = replyingTo;
     setDraft('');
     setReplyingTo(null);
     setSendError(null);
 
     try {
-      const targets = await fetchSendTargets(activeConv.partnerId, user.id, getOrCreateDeviceId());
-      if (targets.length === 0) throw new Error('No recipient devices available yet.');
-      const copies = encryptForDevices(text, keyPairRef.current.secretKey, targets);
       const { data } = await api.post('/messages/send', {
         conversationId: activeConversationId,
-        senderPubKey,
+        text,
         kind: 'text',
         replyToId: replyTarget?.id || null,
-        copies,
       });
-      cacheSentPlaintext(data.messageId, text);
       const createdAt = new Date().toISOString();
       setMessagesByConv((prev) => ({
         ...prev,
@@ -738,7 +625,7 @@ export default function Chat() {
       }));
     } catch (err) {
       console.error(err);
-      setSendError(describeSendError(err));
+      setSendError(describeSendError());
       setDraft(text); // don't lose the draft on a failed send
       setReplyingTo(replyTarget); // ...or the reply target it was attached to
     }
@@ -758,15 +645,10 @@ export default function Chat() {
     const text = applyEmojiShortcuts(editDraft.trim());
     if (!text || !activeConv) return;
 
-    const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
     setSendError(null);
 
     try {
-      const targets = await fetchSendTargets(activeConv.partnerId, user.id, getOrCreateDeviceId());
-      if (targets.length === 0) throw new Error('No recipient devices available yet.');
-      const copies = encryptForDevices(text, keyPairRef.current.secretKey, targets);
-      const { data } = await api.patch(`/messages/${messageId}`, { senderPubKey, copies });
-      cacheSentPlaintext(messageId, text);
+      const { data } = await api.patch(`/messages/${messageId}`, { text });
       setMessagesByConv((prev) => ({
         ...prev,
         [activeConversationId]: (prev[activeConversationId] || []).map((m) => (
@@ -777,23 +659,17 @@ export default function Chat() {
       setEditDraft('');
     } catch (err) {
       console.error(err);
-      setSendError(describeSendError(err));
+      setSendError(describeSendError());
       // leave the edit box open with its draft intact so nothing is lost
     }
   }
 
   async function sendImage(file, viewMode) {
-    const partnerKey = partnerKeyByConv[activeConversationId];
-    if (!file || !partnerKey || !activeConversationId) return;
-    const buf = new Uint8Array(await file.arrayBuffer());
-    const { ciphertext, nonce } = encryptBytes(buf, keyPairRef.current.secretKey, partnerKey);
-    const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
+    if (!file || !activeConversationId) return;
 
     const fd = new FormData();
-    fd.append('image', new Blob([ciphertext]), 'blob.bin');
+    fd.append('image', file);
     fd.append('conversationId', activeConversationId);
-    fd.append('nonce', nonce);
-    fd.append('senderPubKey', senderPubKey);
     fd.append('viewMode', viewMode);
 
     // No explicit Content-Type here — axios/the browser needs to set it
@@ -835,26 +711,17 @@ export default function Chat() {
   }
 
   // Voice notes are single-device only, same as images (see the VoiceNote
-  // model comment in schema.prisma and VoiceNoteBubble.jsx) — encrypted
-  // against the partner's single "latest" key, not fanned out per-device.
-  // Keeps a local object URL of the ORIGINAL (unencrypted) recording for
-  // this tab only, so the sender can play back what they just sent without
-  // ever hitting the erase-on-listen endpoint — mirroring sendImage's
-  // localPreviewUrl below, for the same reason (see VoiceNoteBubble's
-  // header comment on why re-decrypting your own sent ciphertext doesn't
-  // otherwise work).
+  // model comment in schema.prisma and VoiceNoteBubble.jsx). Keeps a local
+  // object URL of the recording for this tab only, so the sender can play
+  // back what they just sent without ever hitting the erase-on-listen
+  // endpoint — mirroring sendImage's localPreviewUrl above, for the same
+  // reason (see VoiceNoteBubble's header comment).
   async function sendVoiceNote(blob, durationSec) {
-    const partnerKey = partnerKeyByConv[activeConversationId];
-    if (!blob || !partnerKey || !activeConversationId) return;
-    const buf = new Uint8Array(await blob.arrayBuffer());
-    const { ciphertext, nonce } = encryptBytes(buf, keyPairRef.current.secretKey, partnerKey);
-    const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
+    if (!blob || !activeConversationId) return;
 
     const fd = new FormData();
-    fd.append('audio', new Blob([ciphertext]), 'blob.bin');
+    fd.append('audio', blob, 'blob.bin');
     fd.append('conversationId', activeConversationId);
-    fd.append('nonce', nonce);
-    fd.append('senderPubKey', senderPubKey);
     fd.append('durationSec', String(durationSec));
 
     try {
@@ -868,8 +735,6 @@ export default function Chat() {
           id: data.messageId,
           kind: 'voice',
           voiceNote: data.voiceNote,
-          nonce,
-          senderPubKey,
           incoming: false,
           localBlobUrl: URL.createObjectURL(blob),
           createdAt,
@@ -901,30 +766,24 @@ export default function Chat() {
   }
 
   // Stickers and GIFs both piggyback on the plain-text send path: the
-  // "text" being encrypted is just a sticker id or a GIF's CDN URL, and a
+  // "text" being sent is just a sticker id or a GIF's CDN URL, and a
   // distinct `kind` is what tells the sidebar/bubble how to render it
   // instead of showing that raw payload. Same reply-target handling as a
   // normal text send.
   async function sendPayload(kind, payloadText) {
     if (!payloadText || !activeConversationId || !activeConv) return;
 
-    const senderPubKey = publicKeyToBase64(keyPairRef.current.publicKey);
     const replyTarget = replyingTo;
     setReplyingTo(null);
     setSendError(null);
 
     try {
-      const targets = await fetchSendTargets(activeConv.partnerId, user.id, getOrCreateDeviceId());
-      if (targets.length === 0) throw new Error('No recipient devices available yet.');
-      const copies = encryptForDevices(payloadText, keyPairRef.current.secretKey, targets);
       const { data } = await api.post('/messages/send', {
         conversationId: activeConversationId,
-        senderPubKey,
+        text: payloadText,
         kind,
         replyToId: replyTarget?.id || null,
-        copies,
       });
-      cacheSentPlaintext(data.messageId, payloadText);
       const createdAt = new Date().toISOString();
       setMessagesByConv((prev) => ({
         ...prev,
@@ -937,7 +796,7 @@ export default function Chat() {
       }));
     } catch (err) {
       console.error(err);
-      setSendError(describeSendError(err));
+      setSendError(describeSendError());
       setReplyingTo(replyTarget);
     }
   }
@@ -969,7 +828,6 @@ export default function Chat() {
     onNewChat: () => { setView('setup'); setSidebarOpen(false); },
     onOpen: openConversation,
     myUserId: user.id,
-    keyPair: keyPairRef.current,
   };
 
   return (
@@ -1075,7 +933,7 @@ export default function Chat() {
               <div className="shrink-0 sticky top-0 z-10 bg-white dark:bg-ink-950 flex flex-wrap items-center justify-between gap-2 pb-2">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="chip bg-mint-500/10 border-mint-500/30 text-mint-400">
-                    {activeConv.partnerDisplayName} · end-to-end encrypted
+                    {activeConv.partnerDisplayName}
                   </span>
                   <span
                     className={`chip ${onlineUserIds.has(activeConv.partnerId)
@@ -1148,7 +1006,6 @@ export default function Chat() {
                     <MessageBubble
                       key={m.id}
                       message={m}
-                      keyPair={keyPairRef.current}
                       senderName={showName ? senderName : null}
                       repliedTo={repliedTo}
                       onReply={() => setReplyingTo(m)}
@@ -1163,7 +1020,7 @@ export default function Chat() {
                   );
                 })}
                 {!historyLoading && activeMessages.length === 0 && (
-                  <p className="text-center text-sm text-slate-500 mt-10">Say hi 👋 — this conversation is end-to-end encrypted.</p>
+                  <p className="text-center text-sm text-slate-500 mt-10">Say hi 👋</p>
                 )}
               </div>
               {showJumpToBottom && (
@@ -1467,7 +1324,7 @@ function FriendsPanel({ user, activeConv, view, incomingRequests, friends, frien
 // Right-sidebar content on desktop, "History" tab of the mobile drawer —
 // this is the original chat-history list, unchanged in behavior, just
 // relocated so the left side could become the friends/profile panel.
-function HistoryPanel({ conversations, activeConversationId, view, onNewChat, onOpen, myUserId, keyPair }) {
+function HistoryPanel({ conversations, activeConversationId, view, onNewChat, onOpen, myUserId }) {
   return (
     <div className="flex flex-col h-full">
       <div className="p-3">
@@ -1492,7 +1349,7 @@ function HistoryPanel({ conversations, activeConversationId, view, onNewChat, on
               {c.hasUnread && <span className="h-2 w-2 rounded-full bg-violet-500 shrink-0" />}
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
-              <ConversationPreviewText conv={c} myUserId={myUserId} keyPair={keyPair} />
+              <ConversationPreviewText conv={c} myUserId={myUserId} />
             </p>
           </button>
         ))}
@@ -1501,49 +1358,29 @@ function HistoryPanel({ conversations, activeConversationId, view, onNewChat, on
   );
 }
 
-function ConversationPreviewText({ conv, myUserId, keyPair }) {
+function ConversationPreviewText({ conv, myUserId }) {
   const last = conv.lastMessage;
   if (!last) return 'Say hi 👋';
   const mine = last.senderId === myUserId;
   if (last.kind === 'image') return mine ? 'You: 📷 Photo' : '📷 Photo';
   if (last.kind === 'sticker') {
-    const id = mine ? getCachedSentPlaintext(last.id) : (keyPair ? decryptText(last.ciphertext, last.nonce, last.senderPubKey, keyPair.secretKey) : null);
-    const s = id ? stickerById(id) : null;
+    const s = last.text ? stickerById(last.text) : null;
     const label = s ? `${s.emoji} Sticker` : '🏷️ Sticker';
     return mine ? `You: ${label}` : label;
   }
   if (last.kind === 'gif') return mine ? 'You: 🎞️ GIF' : '🎞️ GIF';
   if (last.kind === 'voice') return mine ? 'You: 🎤 Voice note' : '🎤 Voice note';
-  if (mine) {
-    const cached = getCachedSentPlaintext(last.id);
-    return cached ? `You: ${cached}` : 'You: (sent)';
-  }
-  if (!keyPair) return '🔒 New message';
-  const text = decryptText(last.ciphertext, last.nonce, last.senderPubKey, keyPair.secretKey);
-  return text || '🔒 New message';
+  const text = last.text || '(sent)';
+  return mine ? `You: ${text}` : text;
 }
 
 function MessageBubble({
-  message, keyPair, senderName, repliedTo, onReply,
+  message, senderName, repliedTo, onReply,
   isEditing, editDraft, onEditDraftChange, onStartEdit, onSaveEdit, onCancelEdit, onVoiceConsumed,
 }) {
   const isMine = !message.incoming;
-  let text = message.plaintext;
-  const isMedia = message.kind === 'image' || message.kind === 'voice';
-
-  // Text, stickers and GIFs are all "ciphertext that decrypts to a string"
-  // (a sentence, a sticker id, or a GIF URL respectively) — images and
-  // voice notes manage their own separate decrypt-on-open flow instead
-  // (ImageBubble / VoiceNoteBubble).
-  if (message.incoming && !isMedia && text === undefined) {
-    text = decryptText(message.ciphertext, message.nonce, message.senderPubKey, keyPair.secretKey);
-  }
-  const decryptFailed = !isMedia && (text === null || text === undefined);
-  if (decryptFailed) {
-    text = isMine ? '🔒 Sent message (unavailable on this device)' : '⚠️ Could not decrypt';
-  }
-
-  const sticker = message.kind === 'sticker' && !decryptFailed ? stickerById(text) : null;
+  const text = message.plaintext;
+  const sticker = message.kind === 'sticker' ? stickerById(text) : null;
   const repliedPreview = repliedTo ? replyPreviewLabel(repliedTo) : null;
 
   return (
@@ -1584,15 +1421,15 @@ function MessageBubble({
               </div>
             </div>
           ) : message.kind === 'image' ? (
-            <ImageBubble message={message} keyPair={keyPair} isMine={isMine} />
+            <ImageBubble message={message} isMine={isMine} />
           ) : message.kind === 'voice' ? (
-            <VoiceNoteBubble message={message} keyPair={keyPair} isMine={isMine} onConsumed={onVoiceConsumed} />
-          ) : message.kind === 'sticker' && !decryptFailed ? (
+            <VoiceNoteBubble message={message} isMine={isMine} onConsumed={onVoiceConsumed} />
+          ) : message.kind === 'sticker' ? (
             <div className="flex flex-col items-center gap-0.5 px-2 py-1" title={sticker?.label}>
               <span className="text-6xl leading-none">{sticker?.emoji || '❓'}</span>
               {sticker?.label && <span className="text-[11px] text-slate-400 dark:text-slate-500">{sticker.label}</span>}
             </div>
-          ) : message.kind === 'gif' && !decryptFailed ? (
+          ) : message.kind === 'gif' ? (
             <img src={text} alt="GIF" loading="lazy" className="rounded-xl max-h-64 max-w-full bg-slate-100 dark:bg-ink-800" />
           ) : (
             <div className={`rounded-2xl px-4 py-2 text-sm ${isMine ? 'bg-brand-gradient text-white' : 'bg-slate-100 dark:bg-ink-800 text-slate-900 dark:text-slate-100'}`}>

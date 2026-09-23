@@ -10,7 +10,7 @@ import { useAuth } from '../lib/auth.jsx';
 
 const TITLE = 'tinytalks.live — Free Random Chat App | Talk to Strangers Anonymously';
 const DESCRIPTION =
-  'tinytalks is a free random chat app for anonymous, end-to-end encrypted conversations with real strangers. No account required — start chatting as a guest in seconds.';
+  'tinytalks is a free random chat app for anonymous conversations with real strangers. No account required — start chatting as a guest in seconds.';
 
 export default function Landing() {
   const [ageConfirmed, setAgeConfirmed] = useState(false);

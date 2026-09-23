@@ -4,9 +4,9 @@ import { useRef, useState } from 'react';
 // send, or ✕ to discard. No waveform, no pause/resume, no scrubbing: this is
 // a stranger-chat app sending short voice notes, not a voice-memo editor.
 // MediaRecorder's default mimeType (webm/opus in Chrome/Firefox, mp4/aac in
-// Safari) is left to the browser — the bytes are opaque ciphertext to the
-// server either way (see Chat.jsx's sendVoiceNote), and playback only ever
-// happens through the same browser that recorded it or another modern one.
+// Safari) is left to the browser (see Chat.jsx's sendVoiceNote) — playback
+// only ever happens through the same browser that recorded it or another
+// modern one.
 export default function VoiceRecorder({ onRecorded, disabled }) {
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);

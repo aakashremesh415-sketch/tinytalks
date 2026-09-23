@@ -1,26 +1,20 @@
 import { useRef, useState } from 'react';
 import { api } from '../lib/api.js';
-import { decryptBytes } from '../lib/crypto.js';
 
-// Renders a voice-note message. Like ImageBubble, encrypted audio is fetched
-// and decrypted client-side only when actually played — but unlike images
-// there's no timed/one-time choice: the recipient's first listen
-// unconditionally erases the note server-side, both the Blob and the
-// VoiceNote row (see server/src/routes/voiceNotes.js), so this only ever
-// shows "tap to play" once and then "played" forever after.
+// Renders a voice-note message. Audio is fetched client-side only when
+// actually played — there's no timed/one-time choice: the recipient's
+// first listen unconditionally erases the note server-side, both the Blob
+// and the VoiceNote row (see server/src/routes/voiceNotes.js), so this
+// only ever shows "tap to play" once and then "played" forever after.
 //
 // Voice notes are single-device-only, the same as images (see the schema
-// comment on VoiceNote) — and re-decrypting your OWN sent ciphertext has the
-// same fundamental asymmetry images have (nacl.box needs the *recipient's*
-// public key to reopen it, not your own, which is the only key stored
-// per-message — see sentCache.js's header comment for the text-message
-// version of this). So exactly like ImageBubble's `localPreviewUrl`, the
+// comment on VoiceNote). Exactly like ImageBubble's `localPreviewUrl`, the
 // sender's own just-recorded note is played straight from an in-memory
 // object URL for this tab/session and never round-trips through the
 // erase-on-listen endpoint at all; reopening it later from history (after a
 // reload, with no local blob left) just shows "Sent", unable to replay —
 // an accepted limitation, not a new one introduced here.
-export default function VoiceNoteBubble({ message, keyPair, isMine, onConsumed }) {
+export default function VoiceNoteBubble({ message, isMine, onConsumed }) {
   const stillAvailable = message.voiceNote !== null && message.voiceNote !== undefined;
   const voiceNoteId = message.voiceNote?.id;
   const durationSec = message.voiceNote?.durationSec;
@@ -45,9 +39,7 @@ export default function VoiceNoteBubble({ message, keyPair, isMine, onConsumed }
     setError(false);
     try {
       const { data } = await api.get(`/voice-notes/${voiceNoteId}/listen`, { responseType: 'arraybuffer' });
-      const bytes = decryptBytes(new Uint8Array(data), message.nonce, message.senderPubKey, keyPair.secretKey);
-      if (!bytes) throw new Error('decrypt failed');
-      const url = URL.createObjectURL(new Blob([bytes]));
+      const url = URL.createObjectURL(new Blob([data]));
       if (audioRef.current) {
         audioRef.current.src = url;
         audioRef.current.play();
@@ -57,8 +49,8 @@ export default function VoiceNoteBubble({ message, keyPair, isMine, onConsumed }
       // routes/voiceNotes.js) — the sender re-fetching their own sent note
       // wouldn't consume it, but in practice the sender only ever gets here
       // via the localBlobUrl branch above (this tab, this session); a
-      // sender reopening their own note from a page reload hits the same
-      // decrypt asymmetry called out above and never reaches this line.
+      // sender reopening their own note from a page reload has no local
+      // blob left (see the header comment) and never reaches this line.
       if (!isMine) {
         setGone(true);
         onConsumed?.();

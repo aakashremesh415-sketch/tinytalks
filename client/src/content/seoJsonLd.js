@@ -18,7 +18,7 @@ export function buildLandingJsonLd() {
         url: SITE_URL,
         name: 'tinytalks.live',
         description:
-          'A free, anonymous, end-to-end encrypted random chat app for talking to strangers.',
+          'A free, anonymous random chat app for talking to strangers.',
       },
       {
         '@type': 'Organization',
@@ -40,7 +40,7 @@ export function buildLandingJsonLd() {
           priceCurrency: 'USD',
         },
         description:
-          'A free random chat app for anonymous, end-to-end encrypted conversations with strangers. No account required to start.',
+          'A free random chat app for anonymous conversations with strangers. No account required to start.',
       },
       {
         '@type': 'FAQPage',

@@ -14,14 +14,14 @@ const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 // Send a self-destruct image into a conversation. The uploaded bytes are
-// expected to already be end-to-end encrypted client-side (nacl.box, same
-// scheme as text messages) — what lands in Blob storage is an opaque
-// ciphertext blob, meaningless without the recipient's private key.
+// the raw image file, stored and viewable directly by the server (the app
+// is no longer end-to-end encrypted; see the note on Message.text in
+// schema.prisma) — the self-destruct behavior (viewMode) is unaffected.
 router.post('/', requireAuth, requireImageVerified, upload.single('image'), asyncHandler(async (req, res) => {
-  const { conversationId, nonce, senderPubKey, viewMode } = req.body;
+  const { conversationId, viewMode } = req.body;
 
-  if (!conversationId || !nonce || !senderPubKey) {
-    return res.status(400).json({ error: 'conversationId, nonce and senderPubKey are required.' });
+  if (!conversationId) {
+    return res.status(400).json({ error: 'conversationId is required.' });
   }
   if (!['TIMED_10S', 'ONE_TIME'].includes(viewMode)) {
     return res.status(400).json({ error: 'viewMode must be TIMED_10S or ONE_TIME.' });
@@ -42,9 +42,7 @@ router.post('/', requireAuth, requireImageVerified, upload.single('image'), asyn
     data: {
       conversationId,
       senderId: req.user.id,
-      ciphertext: '',
-      nonce,
-      senderPubKey,
+      text: '',
       kind: 'image',
       image: {
         create: { storagePath: url, viewMode, uploadedAt, hardDeleteAt },
@@ -61,8 +59,6 @@ router.post('/', requireAuth, requireImageVerified, upload.single('image'), asyn
     id: message.id,
     conversationId,
     senderId: req.user.id,
-    nonce,
-    senderPubKey,
     kind: 'image',
     imageId: message.image.id,
     viewMode: message.image.viewMode,
@@ -72,8 +68,8 @@ router.post('/', requireAuth, requireImageVerified, upload.single('image'), asyn
   res.status(201).json({ messageId: message.id, image: publicImage(message.image) });
 }));
 
-// Recipient (or sender) fetches the encrypted image bytes to decrypt and
-// display client-side. Opening it consumes the one-time/timed view.
+// Recipient (or sender) fetches the raw image bytes to display client-side.
+// Opening it consumes the one-time/timed view.
 router.get('/:imageId/view', requireAuth, requireImageVerified, asyncHandler(async (req, res) => {
   const image = await prisma.image.findUnique({
     where: { id: req.params.imageId },

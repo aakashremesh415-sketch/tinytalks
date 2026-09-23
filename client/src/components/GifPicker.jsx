@@ -3,10 +3,9 @@ import { api } from '../lib/api.js';
 
 // GIF search, proxied through server/src/routes/gifs.js (which holds the
 // Giphy API key server-side) so the key never ships to the browser. The
-// GIF itself is sent as its Giphy CDN URL, E2E-encrypted the same way a
-// text message is (see Chat.jsx's sendGif) — the server only ever stores
-// ciphertext either way, it just happens to decrypt to a URL this time
-// instead of a sentence.
+// GIF itself is sent as its Giphy CDN URL, stored as plain text the same
+// way a text message is (see Chat.jsx's sendGif) — it just happens to be
+// a URL this time instead of a sentence.
 export default function GifPicker({ onSelect }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
