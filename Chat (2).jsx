@@ -196,7 +196,6 @@ export default function Chat() {
   const [desiredGender, setDesiredGender] = useState('ANY');
   const [draft, setDraft] = useState('');
   const [reportOpen, setReportOpen] = useState(false);
-  const [imageVerifiedNotice, setImageVerifiedNotice] = useState(false);
   const [blockBusy, setBlockBusy] = useState(false);
   // A failed send/edit used to just log to the console and silently
   // restore the draft — which reads as "my message vanished for no
@@ -785,10 +784,6 @@ export default function Chat() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    if (!imageVerified) {
-      setImageVerifiedNotice(true);
-      return;
-    }
     const viewMode = window.confirm('Send as one-time view? (Cancel = 10-second view)') ? 'ONE_TIME' : 'TIMED_10S';
     sendImage(file, viewMode);
   }
@@ -1152,7 +1147,7 @@ export default function Chat() {
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="btn-secondary !px-3"
-                  title={imageVerified ? 'Send a self-destructing image' : 'Verify to unlock image sharing'}
+                  title="Send a self-destructing image"
                 >
                   📷
                 </button>
@@ -1205,20 +1200,6 @@ export default function Chat() {
         />
       )}
 
-      {imageVerifiedNotice && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-6 z-50">
-          <div className="card p-6 max-w-sm text-center">
-            <p className="font-display font-semibold">Verify to send images</p>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
-              A quick, free, ID-free check unlocks self-destructing image sharing.
-            </p>
-            <div className="flex gap-2 mt-4">
-              <button className="btn-secondary flex-1" onClick={() => setImageVerifiedNotice(false)}>Not now</button>
-              <Link to="/verify" className="btn-primary flex-1">Verify</Link>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

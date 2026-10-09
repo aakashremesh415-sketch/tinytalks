@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import { prisma } from '../db.js';
-import { requireAuth, requireImageVerified } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { notifyUser } from '../lib/pusher.js';
 import { uploadObject, fetchObject, deleteObject } from '../lib/storage.js';
@@ -17,7 +17,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 // the raw image file, stored and viewable directly by the server (the app
 // is no longer end-to-end encrypted; see the note on Message.text in
 // schema.prisma) — the self-destruct behavior (viewMode) is unaffected.
-router.post('/', requireAuth, requireImageVerified, upload.single('image'), asyncHandler(async (req, res) => {
+router.post('/', requireAuth, upload.single('image'), asyncHandler(async (req, res) => {
   const { conversationId, viewMode } = req.body;
 
   if (!conversationId) {
@@ -70,7 +70,7 @@ router.post('/', requireAuth, requireImageVerified, upload.single('image'), asyn
 
 // Recipient (or sender) fetches the raw image bytes to display client-side.
 // Opening it consumes the one-time/timed view.
-router.get('/:imageId/view', requireAuth, requireImageVerified, asyncHandler(async (req, res) => {
+router.get('/:imageId/view', requireAuth, asyncHandler(async (req, res) => {
   const image = await prisma.image.findUnique({
     where: { id: req.params.imageId },
     include: { message: { include: { conversation: true } } },

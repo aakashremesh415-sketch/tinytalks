@@ -140,16 +140,3 @@ export function requireAdmin(req, res, next) {
   next();
 }
 
-// Gate for anything image-related: must have passed BOTH email OTP and
-// facial age-estimation. See lib/ageEstimation.js for why both are needed
-// and why neither can be skipped in favor of a free/DIY replacement.
-export function requireImageVerified(req, res, next) {
-  if (!req.user.otpVerified || !req.user.ageEstimationPassed) {
-    return res.status(403).json({
-      error: 'Image sharing requires email verification and age verification first.',
-      otpVerified: req.user.otpVerified,
-      ageEstimationPassed: req.user.ageEstimationPassed,
-    });
-  }
-  next();
-}
