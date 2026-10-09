@@ -40,6 +40,12 @@ different here on purpose:
   (`/api/queue/join`, `/api/messages/send`); the server pushes an event to
   Pusher, and Pusher's own infrastructure holds the live connection to
   each browser. See `server/src/lib/pusher.js`.
+- **Voice calls use WebRTC peer-to-peer audio.** The existing Pusher setup
+  relays call signaling only; audio travels directly between browsers, so
+  there is no paid calling provider or server-side media stream. Calls
+  need microphone permission and a secure context (HTTPS, or localhost).
+  A free STUN server helps browsers connect, but networks that require a
+  TURN relay may prevent a direct call.
 - **Images and verification photos go to Vercel Blob, not local disk.**
   See `server/src/lib/storage.js` — swap this file if you'd rather use
   S3 or another provider.

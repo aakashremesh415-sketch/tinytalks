@@ -16,6 +16,7 @@ import blockRoutes from './routes/blocks.js';
 import friendRoutes from './routes/friends.js';
 import gifRoutes from './routes/gifs.js';
 import voiceNoteRoutes from './routes/voiceNotes.js';
+import callRoutes from './routes/calls.js';
 
 // Last-resort safety net: every request handler above should already
 // catch its own errors (asyncHandler), but this stops any error that
@@ -55,6 +56,7 @@ app.use('/api/blocks', blockRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/gifs', gifRoutes);
 app.use('/api/voice-notes', voiceNoteRoutes);
+app.use('/api/calls', callRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

@@ -8,6 +8,7 @@ import { stickerById } from '../components/StickerPicker.jsx';
 import PickerTabs from '../components/PickerTabs.jsx';
 import VoiceRecorder from '../components/VoiceRecorder.jsx';
 import VoiceNoteBubble from '../components/VoiceNoteBubble.jsx';
+import VoiceCall from '../components/VoiceCall.jsx';
 import ViewToggle from '../components/ViewToggle.jsx';
 import { api, getErrorMessage } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -881,6 +882,15 @@ export default function Chat() {
           <Link to="/settings" className="chip bg-slate-100 dark:bg-white/5 border-slate-200 dark:border-white/10 hover:bg-slate-200 dark:hover:bg-white/10">
             ⚙ Settings
           </Link>
+          <VoiceCall
+            channel={channel}
+            conversationId={activeConv?.id}
+            partnerId={activeConv?.partnerId}
+            partnerName={activeConv?.partnerDisplayName}
+            partnerOnline={Boolean(activeConv && onlineUserIds.has(activeConv.partnerId))}
+            showButton={Boolean(activeConv)}
+            userId={user.id}
+          />
           <ThemeToggle />
           {isAdmin && <ViewToggle active="chat" />}
           <button onClick={() => { logout(); navigate('/'); }} className="text-sm text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white">
