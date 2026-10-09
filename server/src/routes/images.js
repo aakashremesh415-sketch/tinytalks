@@ -110,11 +110,12 @@ router.delete('/:imageId', requireAuth, asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Only the sender can delete this image.' });
   }
 
-  await deleteObject(image.storagePath);
-
+  // Keep the blob for the 2-day admin review window; only hide it from the
+  // chat UI so the admin side still has a copy to inspect, while the sender's
+  // end no longer sees it in conversation history.
   await prisma.image.update({
     where: { id: image.id },
-    data: { deletedByUser: true, deletedFromChatAt: new Date(), hardDeletedAt: new Date() },
+    data: { deletedByUser: true, deletedFromChatAt: new Date() },
   });
 
   res.json({ ok: true });
