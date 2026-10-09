@@ -10,6 +10,7 @@ const NAV = [
   { to: '/admin/verifications', label: 'Gender verifications' },
   { to: '/admin/reports', label: 'Reports & tickets' },
   { to: '/admin/users', label: 'Users & bans' },
+  { to: '/admin/images', label: 'Recent images' },
 ];
 
 export default function AdminLayout() {

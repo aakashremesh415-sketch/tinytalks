@@ -14,6 +14,7 @@ import AdminDashboard from './pages/Admin/AdminDashboard.jsx';
 import AdminVerifications from './pages/Admin/AdminVerifications.jsx';
 import AdminReports from './pages/Admin/AdminReports.jsx';
 import AdminUsers from './pages/Admin/AdminUsers.jsx';
+import AdminRecentImages from './pages/Admin/AdminRecentImages.jsx';
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth();
@@ -88,6 +89,7 @@ export default function App() {
         <Route path="verifications" element={<AdminVerifications />} />
         <Route path="reports" element={<AdminReports />} />
         <Route path="users" element={<AdminUsers />} />
+        <Route path="images" element={<AdminRecentImages />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

@@ -220,12 +220,57 @@ router.delete('/users/:id', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+router.get('/images/recent', asyncHandler(async (req, res) => {
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  const images = await prisma.image.findMany({
+    where: {
+      uploadedAt: { gte: twoDaysAgo },
+      hardDeletedAt: null,
+    },
+    orderBy: { uploadedAt: 'desc' },
+    take: 100,
+    include: {
+      message: {
+        include: {
+          sender: { select: { id: true, displayName: true, email: true } },
+          conversation: {
+            include: {
+              participantA: { select: { id: true, displayName: true, email: true } },
+              participantB: { select: { id: true, displayName: true, email: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  res.json({
+    images: images.map((image) => {
+      const conversation = image.message.conversation;
+      const partner = conversation.participantAId === image.message.senderId ? conversation.participantB : conversation.participantA;
+      return {
+        id: image.id,
+        conversationId: conversation.id,
+        uploadedAt: image.uploadedAt,
+        viewMode: image.viewMode,
+        sender: image.message.sender,
+        partner,
+      };
+    }),
+  });
+}));
+
 // --- Image moderation: view any not-yet-hard-deleted image (soft-deleted
 // or not) attached to a reported conversation. Every access is logged. ---
 router.get('/images/:imageId', asyncHandler(async (req, res) => {
   const image = await prisma.image.findUnique({ where: { id: req.params.imageId } });
   if (!image || image.hardDeletedAt) {
     return res.status(404).json({ error: 'Image no longer available (permanently removed).' });
+  }
+
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  if (image.uploadedAt < twoDaysAgo) {
+    return res.status(404).json({ error: 'Image is older than the 2-day admin review window.' });
   }
 
   const bytes = await fetchObject(image.storagePath);

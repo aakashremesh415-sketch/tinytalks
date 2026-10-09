@@ -18,6 +18,7 @@ export default function ImageBubble({ message, isMine }) {
   const [gone, setGone] = useState(alreadyGone);
   const [objectUrl, setObjectUrl] = useState(message.localPreviewUrl || null);
   const [countdown, setCountdown] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const timerRef = useRef(null);
 
   useEffect(() => () => {
@@ -68,6 +69,27 @@ export default function ImageBubble({ message, isMine }) {
     setGone(true);
   }
 
+  async function handleDelete() {
+    if (!isMine || !message.imageId || deleting) return;
+    if (!window.confirm('Delete this image from your chat?')) return;
+
+    try {
+      setDeleting(true);
+      await api.delete(`/images/${message.imageId}`);
+      if (opened && objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+      setObjectUrl(null);
+      setOpened(false);
+      setGone(true);
+    } catch (err) {
+      console.error('[ImageBubble] delete failed:', err);
+      window.alert('Could not delete this image right now.');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (gone) {
     return (
       <div className="max-w-[75%] rounded-2xl px-4 py-3 text-sm bg-slate-100 dark:bg-ink-800 text-slate-500 italic">
@@ -91,6 +113,16 @@ export default function ImageBubble({ message, isMine }) {
           <img src={objectUrl} alt="" className="max-h-80 w-full object-contain bg-black" />
           {countdown !== null && (
             <span className="absolute top-2 right-2 chip bg-black/60 border-slate-300 dark:border-white/20 text-white">{countdown}s</span>
+          )}
+          {isMine && (
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={deleting}
+              className="absolute bottom-2 left-2 btn-secondary !py-1 !px-3 text-xs disabled:opacity-60"
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
           )}
           {message.viewMode === 'ONE_TIME' && !isMine && (
             <button
