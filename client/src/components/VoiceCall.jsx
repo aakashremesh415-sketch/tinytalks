@@ -54,7 +54,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
         if (callRef.current.status !== 'connecting') return;
         const callId = callRef.current.callId;
         sendHangup(callId);
-        finishCall('Could not connect directly. Check your network and try again.');
+        finishCall('Could not establish a connection. Check the network or TURN server settings and try again.');
       }, 30000);
     } else if (next.status === 'active') {
       clearTimeout(connectionTimeoutRef.current);
@@ -114,15 +114,18 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
   }
 
   async function createPeerConnection(callId) {
+    const { data } = await api.get('/calls/ice-servers');
+    if (!Array.isArray(data.iceServers) || data.iceServers.length === 0) {
+      throw new Error('Voice call connection settings are unavailable.');
+    }
+    if (callIdRef.current !== callId) return null;
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     if (callIdRef.current !== callId) {
       stream.getTracks().forEach((track) => track.stop());
       return null;
     }
     streamRef.current = stream;
-    const peer = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-    });
+    const peer = new RTCPeerConnection({ iceServers: data.iceServers });
     peerRef.current = peer;
     stream.getTracks().forEach((track) => peer.addTrack(track, stream));
 
@@ -147,7 +150,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
         updateCall({ ...callRef.current, status: 'active' });
         setFeedback('');
       } else if (peer.connectionState === 'failed') {
-        finishCall('Could not connect directly. Check your network and try again.');
+        finishCall('Could not establish a connection. Check the network or TURN server settings and try again.');
       } else if (peer.connectionState === 'disconnected') {
         clearTimeout(connectionTimeoutRef.current);
         connectionTimeoutRef.current = setTimeout(() => {

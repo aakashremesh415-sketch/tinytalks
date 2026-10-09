@@ -40,12 +40,13 @@ different here on purpose:
   (`/api/queue/join`, `/api/messages/send`); the server pushes an event to
   Pusher, and Pusher's own infrastructure holds the live connection to
   each browser. See `server/src/lib/pusher.js`.
-- **Voice calls use WebRTC peer-to-peer audio.** The existing Pusher setup
-  relays call signaling only; audio travels directly between browsers, so
-  there is no paid calling provider or server-side media stream. Calls
-  need microphone permission and a secure context (HTTPS, or localhost).
-  A free STUN server helps browsers connect, but networks that require a
-  TURN relay may prevent a direct call.
+- **Voice calls use WebRTC audio.** The existing Pusher setup relays call
+  signaling only; audio travels directly between browsers when possible,
+  with no server-side media stream. Calls need microphone permission and
+  a secure context (HTTPS, or localhost). STUN is tried first; when a
+  direct path is not possible, a configured TURN server relays audio
+  between networks that block peer-to-peer connections. Without TURN
+  settings, calls can still fail on restrictive networks.
 - **Images and verification photos go to Vercel Blob, not local disk.**
   See `server/src/lib/storage.js` — swap this file if you'd rather use
   S3 or another provider.
@@ -102,6 +103,8 @@ Project → **Settings** → **Environment Variables**:
 | `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD` | your first admin login |
 | `PUSHER_APP_ID` / `PUSHER_KEY` / `PUSHER_SECRET` / `PUSHER_CLUSTER` | from Pusher |
 | `VITE_PUSHER_KEY` / `VITE_PUSHER_CLUSTER` | same key/cluster, exposed to the client build |
+| `TURN_URLS` | comma-separated TURN URLs from a TURN provider/server that supports REST credentials, including TCP/TLS endpoints when available |
+| `TURN_SHARED_SECRET` | server-side shared secret for generating time-limited TURN credentials; never expose it as a `VITE_` variable |
 | `CRON_SECRET` | any long random string (Vercel sends it back automatically when calling the cron route) |
 | `CLIENT_ORIGIN` | your deployed URL, e.g. `https://tinytalks.live` |
 | `SMTP_*` | optional — see below |
@@ -157,6 +160,17 @@ link to the server console. Set real SMTP credentials when ready.
 to a real facial age-estimation + liveness vendor (Yoti, Persona, Veriff,
 Incode, etc.), image sharing stays disabled for everyone — that's the
 intended safe default, not a bug.
+
+**Voice-call TURN relay**: configure `TURN_URLS` and `TURN_SHARED_SECRET`
+in both local server environment and the Vercel project's server-side
+environment variables using a TURN provider/server that supports the
+coturn/TURN REST shared-secret credential format. The API creates
+user-specific credentials that expire after 24 hours. Add the provider's
+UDP and TCP/TLS TURN URLs (ideally including a TLS endpoint on port 443)
+to improve connectivity on restrictive networks. TURN relays audio and
+will incur the provider's bandwidth charges. Calls without TURN configured
+retain the existing STUN-only behavior and are not guaranteed to connect
+between different networks.
 
 ## Known limits worth knowing about
 
