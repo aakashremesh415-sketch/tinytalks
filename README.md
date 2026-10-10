@@ -40,10 +40,11 @@ different here on purpose:
   delivery for chat messages. An active private conversation uses Metered
   `SignallingClient` for chat notices and a live peer roster; message
   content remains persisted and fetched through the authenticated app API.
-- **Calls use Metered Frame in voice-only mode.** Each call gets a
-  standard expiring private Metered room and a room-scoped access token
-  that disables video and screen sharing. Camera video starts off; calls
-  need microphone permission and a secure context (HTTPS, or localhost).
+- **Calls use Metered's Video SDK in voice-only mode.** Each call gets a
+  standard expiring private Metered room and a room-scoped access token.
+  The app joins with audio tracks only and renders no video or camera
+  controls; calls need microphone permission and a secure context (HTTPS,
+  or localhost).
 - **Images and verification photos go to Vercel Blob, not local disk.**
   See `server/src/lib/storage.js` — swap this file if you'd rather use
   S3 or another provider.
@@ -164,7 +165,7 @@ intended safe default, not a bug.
 `METERED_SECRET_KEY`, `METERED_REALTIME_SK_ID`, and
 `METERED_REALTIME_SK` in the server environment (including Vercel Production
 and Preview as needed). `METERED_SECRET_KEY` creates expiring, private voice-call
-Metered Frame rooms and mints room-scoped access tokens. The browser receives
+Metered rooms and mints room-scoped access tokens. The browser receives
 only the access token for its call room. `METERED_REALTIME_SK` signs
 conversation-scoped JWTs with the user's display name and avatar metadata;
 it is never sent to the browser. The client uses `SignallingClient` for

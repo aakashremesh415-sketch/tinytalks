@@ -2,28 +2,28 @@ import { useEffect, useRef, useState } from 'react';
 import { api, getErrorMessage } from '../lib/api.js';
 
 const IDLE_CALL = { status: 'idle' };
-const FRAME_SDK_URL = 'https://cdn.metered.ca/sdk/frame/1.4.3/sdk-frame.min.js';
-let frameSdkPromise;
+const VIDEO_SDK_URL = 'https://cdn.metered.ca/sdk/video/1.4.6/sdk.min.js';
+let videoSdkPromise;
 
-function loadFrameSdk() {
-  if (window.MeteredFrame) return Promise.resolve();
-  if (!frameSdkPromise) {
-    frameSdkPromise = new Promise((resolve, reject) => {
+function loadVideoSdk() {
+  if (window.Metered?.Meeting) return Promise.resolve();
+  if (!videoSdkPromise) {
+    videoSdkPromise = new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = FRAME_SDK_URL;
+      script.src = VIDEO_SDK_URL;
       script.async = true;
       script.onload = () => {
-        if (window.MeteredFrame) resolve();
-        else reject(new Error('Metered Frame SDK did not initialize.'));
+        if (window.Metered?.Meeting) resolve();
+        else reject(new Error('Metered Video SDK did not initialize.'));
       };
-      script.onerror = () => reject(new Error('Could not load the Metered Frame SDK.'));
+      script.onerror = () => reject(new Error('Could not load the Metered Video SDK.'));
       document.head.appendChild(script);
     }).catch((error) => {
-      frameSdkPromise = null;
+      videoSdkPromise = null;
       throw error;
     });
   }
-  return frameSdkPromise;
+  return videoSdkPromise;
 }
 
 async function requestMicrophonePermission() {
@@ -43,9 +43,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
   const callIdRef = useRef(null);
   const targetRef = useRef(null);
   const timeoutRef = useRef(null);
-  const frameContainerRef = useRef(null);
-  const frameRef = useRef(null);
-  const frameJoinedCallRef = useRef(null);
+  const audioContainerRef = useRef(null);
   const callLockReleaseRef = useRef(null);
   const isMountedRef = useRef(true);
 
@@ -138,7 +136,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
     updateCall({ status: 'preparing', callId, partnerName, direction: 'outgoing' });
 
     try {
-      const { data: meeting } = await api.post(`/calls/${conversationId}/frame-room`, { callId });
+      const { data: meeting } = await api.post(`/calls/${conversationId}/voice-room`, { callId });
       if (callIdRef.current !== callId || callRef.current.status !== 'preparing') return;
       updateCall({ status: 'outgoing', callId, meeting, partnerName, direction: 'outgoing' });
       const sent = await sendSignal('invite', callId, conversationId);
@@ -184,7 +182,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
 
     try {
       const target = targetRef.current;
-      const { data: meeting } = await api.post(`/calls/${target.conversationId}/frame-token`, { callId: currentCall.callId });
+      const { data: meeting } = await api.post(`/calls/${target.conversationId}/voice-token`, { callId: currentCall.callId });
       if (callRef.current.status !== 'incoming' || callRef.current.callId !== currentCall.callId) return;
       updateCall({ ...currentCall, status: 'joining', meeting, partnerName: target.partnerName, direction: 'incoming' });
       const sent = await sendSignal('accept', currentCall.callId, target.conversationId);
@@ -298,7 +296,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
     const timeout = setTimeout(() => {
       if (callRef.current.callId === callId && callRef.current.status === 'joining') {
         sendHangup(callId);
-        finishCall('Could not join the voice call. Check microphone permission.');
+        finishCall('Could not connect the voice call. Check microphone permission and network access.');
       }
     }, 30_000);
     return () => clearTimeout(timeout);
@@ -314,63 +312,75 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
   const shouldJoinMeeting = call.status === 'joining' || call.status === 'active';
   useEffect(() => {
     if (!shouldJoinMeeting || !call.meeting || !call.callId) return undefined;
-    const container = frameContainerRef.current;
-    if (!container) return undefined;
+    const audioContainer = audioContainerRef.current;
+    if (!audioContainer) return undefined;
 
     let cancelled = false;
-    let frame;
-    const mountFrame = async () => {
-      await loadFrameSdk();
+    const remoteAudioElements = new Map();
+    let meeting;
+    const joinVoiceCall = async () => {
+      await loadVideoSdk();
       if (cancelled) return;
-      frame = new window.MeteredFrame();
-      frameRef.current = frame;
+      meeting = new window.Metered.Meeting();
       const callId = call.callId;
-      frame.on('meetingJoined', () => {
-        if (callRef.current.callId !== callId || callRef.current.status === 'idle') return;
-        frameJoinedCallRef.current = callId;
-        setFeedback('');
-        updateCall({ ...callRef.current, status: 'active' });
+      meeting.on('remoteTrackStarted', ({ streamId, type, track }) => {
+        if (cancelled || type !== 'audio' || remoteAudioElements.has(streamId)) return;
+        const audio = document.createElement('audio');
+        audio.autoplay = true;
+        audio.playsInline = true;
+        audio.srcObject = new MediaStream([track]);
+        audioContainer.append(audio);
+        remoteAudioElements.set(streamId, audio);
+        audio.play().catch((error) => {
+          console.error('[voice-call] remote audio playback was blocked:', error);
+        });
       });
-      frame.on('meetingLeft', () => {
+      meeting.on('remoteTrackStopped', ({ streamId }) => {
+        const audio = remoteAudioElements.get(streamId);
+        if (!audio) return;
+        audio.pause();
+        audio.srcObject = null;
+        audio.remove();
+        remoteAudioElements.delete(streamId);
+      });
+      meeting.on('meetingEnded', () => {
         if (callRef.current.callId !== callId || callRef.current.status === 'idle') return;
-        frameJoinedCallRef.current = null;
         sendHangup(callId);
-        finishCall('');
+        finishCall('The voice call ended.');
       });
-      frame.init({
+      await meeting.join({
         roomURL: call.meeting.roomURL,
         accessToken: call.meeting.accessToken,
-        width: '100%',
-        height: '100%',
-        autoJoin: true,
         name: userName || 'Anonymous',
-        joinVideoOn: false,
-        joinAudioOn: true,
-        disableChat: true,
-        disableScreenSharing: true,
-        showInviteBox: false,
-      }, container);
+        receiveVideoStreamType: 'none',
+      });
+      if (cancelled) return;
+      await meeting.startAudio();
+      if (cancelled || callRef.current.callId !== callId || callRef.current.status === 'idle') return;
+      setFeedback('');
+      updateCall({ ...callRef.current, status: 'active' });
     };
 
-    mountFrame().catch((error) => {
+    joinVoiceCall().catch((error) => {
       if (cancelled) return;
-      console.error('[voice-call] Metered Frame failed to load:', error);
+      console.error('[voice-call] Metered voice connection failed:', error);
       sendHangup(call.callId);
-      finishCall(getErrorMessage(error, 'Could not load the voice call.'));
+      finishCall(getErrorMessage(error, 'Could not connect the voice call.'));
     });
 
     return () => {
       cancelled = true;
-      if (frameRef.current === frame) frameRef.current = null;
-      if (frame && frameJoinedCallRef.current === call.callId) {
-        frameJoinedCallRef.current = null;
-        try {
-          frame.leave();
-        } catch (error) {
+      if (meeting) {
+        meeting.leaveMeeting().catch((error) => {
           console.error('[voice-call] failed to leave the Metered meeting:', error);
-        }
+        });
       }
-      container.replaceChildren();
+      for (const audio of remoteAudioElements.values()) {
+        audio.pause();
+        audio.srcObject = null;
+        audio.remove();
+      }
+      remoteAudioElements.clear();
     };
   }, [call.callId, call.meeting, shouldJoinMeeting, userName]);
 
@@ -402,7 +412,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
       )}
       {callVisible && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Voice call">
-          <div className="card flex h-[min(70vh,640px)] w-full max-w-xl flex-col gap-3 p-3 sm:p-5">
+          <div className="card flex min-h-[240px] w-full max-w-md flex-col gap-3 p-3 sm:p-5">
             <div className="flex shrink-0 items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="truncate font-display text-lg font-semibold">{currentPartnerName}</p>
@@ -415,13 +425,14 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
               )}
             </div>
             {feedback && <p role="status" className="shrink-0 text-sm text-coral-500">{feedback}</p>}
-            <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl">
-              <div className="absolute inset-0" ref={frameContainerRef} />
-              {call.status !== 'active' && (
-                <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500 dark:text-slate-300">
-                  Connecting to the voice call…
-                </div>
-              )}
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-xl bg-slate-100 py-8 dark:bg-white/5">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-violet-500/15 text-2xl text-violet-400" aria-hidden="true">
+                ☎
+              </div>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                {call.status === 'active' ? 'Voice call connected' : 'Connecting to voice call…'}
+              </p>
+              <div className="hidden" ref={audioContainerRef} />
             </div>
             {call.status === 'incoming' && (
               <div className="flex shrink-0 justify-center gap-3">

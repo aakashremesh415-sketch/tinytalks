@@ -9,7 +9,7 @@ const router = Router();
 const SIGNAL_TYPES = new Set(['invite', 'accept', 'reject', 'hangup']);
 const CALL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REALTIME_TOKEN_TTL_SECONDS = 60 * 60;
-const FRAME_ROOM_TTL_SECONDS = 2 * 60 * 60;
+const CALL_ROOM_TTL_SECONDS = 2 * 60 * 60;
 const METERED_REQUEST_TIMEOUT_MS = 10_000;
 const METERED_CHANNEL_PREFIX = 'tinytalks/conversations';
 
@@ -84,12 +84,12 @@ async function authorizeConversationCall(conversationId, userId, res) {
   return conversation;
 }
 
-function frameRoomName(callId) {
+function callRoomName(callId) {
   return `call-${callId}`;
 }
 
-async function createFrameAccessToken(roomName) {
-  const expireUnixSec = Math.floor(Date.now() / 1000) + FRAME_ROOM_TTL_SECONDS;
+async function createCallAccessToken(roomName) {
+  const expireUnixSec = Math.floor(Date.now() / 1000) + CALL_ROOM_TTL_SECONDS;
   const result = await meteredRequest('token', {
     roomName,
     expireUnixSec,
@@ -136,7 +136,7 @@ router.post('/:conversationId/realtime-token', requireAuth, asyncHandler(async (
   res.json({ token, channel });
 }));
 
-router.post('/:conversationId/frame-room', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:conversationId/voice-room', requireAuth, asyncHandler(async (req, res) => {
   const conversation = await authorizeConversationCall(req.params.conversationId, req.user.id, res);
   if (!conversation) return;
 
@@ -152,8 +152,8 @@ router.post('/:conversationId/frame-room', requireAuth, asyncHandler(async (req,
     console.error('[calls] Metered server configuration is incomplete:', error.message);
     return res.status(500).json({ error: 'METERED_APP_NAME and METERED_SECRET_KEY must be configured on the server.' });
   }
-  const roomName = frameRoomName(callId);
-  const expireUnixSec = Math.floor(Date.now() / 1000) + FRAME_ROOM_TTL_SECONDS;
+  const roomName = callRoomName(callId);
+  const expireUnixSec = Math.floor(Date.now() / 1000) + CALL_ROOM_TTL_SECONDS;
   let accessToken;
   try {
     await meteredRequest('room', {
@@ -169,7 +169,7 @@ router.post('/:conversationId/frame-room', requireAuth, asyncHandler(async (req,
       expireUnixSec,
       ejectAtRoomExp: true,
     });
-    accessToken = await createFrameAccessToken(roomName);
+    accessToken = await createCallAccessToken(roomName);
   } catch (error) {
     console.error('[calls] Metered room provisioning failed:', error);
     return res.status(502).json({ error: 'Could not prepare the Metered call room. Check the Metered server configuration and try again.' });
@@ -182,7 +182,7 @@ router.post('/:conversationId/frame-room', requireAuth, asyncHandler(async (req,
   });
 }));
 
-router.post('/:conversationId/frame-token', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:conversationId/voice-token', requireAuth, asyncHandler(async (req, res) => {
   const conversation = await authorizeConversationCall(req.params.conversationId, req.user.id, res);
   if (!conversation) return;
 
@@ -193,7 +193,7 @@ router.post('/:conversationId/frame-token', requireAuth, asyncHandler(async (req
 
   let accessToken;
   try {
-    accessToken = await createFrameAccessToken(frameRoomName(callId));
+    accessToken = await createCallAccessToken(callRoomName(callId));
   } catch (error) {
     console.error('[calls] Metered access-token request failed:', error);
     return res.status(502).json({ error: 'Could not authorize this Metered call. Check the Metered server configuration and try again.' });
@@ -201,7 +201,7 @@ router.post('/:conversationId/frame-token', requireAuth, asyncHandler(async (req
   const { appName } = meteredSettings();
   res.set('Cache-Control', 'no-store');
   res.json({
-    roomURL: `${appName}.metered.live/${frameRoomName(callId)}`,
+    roomURL: `${appName}.metered.live/${callRoomName(callId)}`,
     accessToken,
   });
 }));
