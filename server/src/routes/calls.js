@@ -89,8 +89,8 @@ function frameRoomName(callId) {
 }
 
 async function createFrameAccessToken(roomName) {
-  const expirationDate = new Date(Date.now() + FRAME_ROOM_TTL_SECONDS * 1000);
-  const result = await meteredRequest('token', { roomName, expirationDate: expirationDate.toISOString() });
+  const expireUnixSec = Math.floor(Date.now() / 1000) + FRAME_ROOM_TTL_SECONDS;
+  const result = await meteredRequest('token', { roomName, expireUnixSec });
   if (typeof result?.token !== 'string' || !result.token) {
     throw new Error('Metered did not return a room access token.');
   }
