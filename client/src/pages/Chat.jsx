@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { SignallingClient } from '@metered-ca/realtime';
 import Logo from '../components/Logo.jsx';
 import ThemeToggle from '../components/ThemeToggle.jsx';
 import ReportModal from '../components/ReportModal.jsx';
@@ -146,8 +147,14 @@ export default function Chat() {
   // restore the draft — which reads as "my message vanished for no
   // reason" from the user's side. This surfaces it instead.
   const [sendError, setSendError] = useState(null);
+  const [meteredState, setMeteredState] = useState('idle');
+  const [meteredPeers, setMeteredPeers] = useState([]);
+  const [meteredError, setMeteredError] = useState(null);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
+  const meteredClientRef = useRef(null);
+  const meteredChannelRef = useRef(null);
+  const pusherFallbackTimersRef = useRef(new Map());
   const nearBottomRef = useRef(true); // whether the thread is scrolled near its bottom right now
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
 
@@ -218,7 +225,7 @@ export default function Chat() {
     // so an incoming message here is always FROM the partner of whichever
     // conversation it names, whether or not that thread is the one
     // currently open on screen.
-    const onMessage = (msg) => {
+    const appendPusherMessage = (msg) => {
       const isActive = msg.conversationId === activeConversationIdRef.current;
       const incoming = msg.senderId !== user.id;
 
@@ -262,6 +269,22 @@ export default function Chat() {
         }
         return bumped.map((c) => (c.id === msg.conversationId ? { ...c, hasUnread: incoming && !isActive } : c));
       });
+    };
+    const onMessage = (msg) => {
+      const isActive = msg.conversationId === activeConversationIdRef.current;
+      const meteredReady = meteredChannelRef.current && meteredClientRef.current?.state === 'connected';
+      if (!isActive || !meteredReady) {
+        appendPusherMessage(msg);
+        return;
+      }
+
+      const pendingTimer = pusherFallbackTimersRef.current.get(msg.id);
+      if (pendingTimer) clearTimeout(pendingTimer);
+      const timer = setTimeout(() => {
+        pusherFallbackTimersRef.current.delete(msg.id);
+        appendPusherMessage(msg);
+      }, 1000);
+      pusherFallbackTimersRef.current.set(msg.id, timer);
     };
 
     // A text message got edited — either by the partner, or echoed back to
@@ -314,8 +337,158 @@ export default function Chat() {
       channel.unbind('friend:request', onFriendRequest);
       channel.unbind('friend:accepted', onFriendAccepted);
       channel.unbind('conversation:cleared', onCleared);
+      for (const timer of pusherFallbackTimersRef.current.values()) clearTimeout(timer);
+      pusherFallbackTimersRef.current.clear();
     };
   }, [channel]);
+
+  useEffect(() => {
+    if (view !== 'thread' || !activeConversationId || !user?.id) {
+      setMeteredState('idle');
+      setMeteredPeers([]);
+      setMeteredError(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let channelName = null;
+    const conversationId = activeConversationId;
+    const client = new SignallingClient({
+      autoResubscribe: true,
+      tokenProvider: async () => {
+        const { data } = await api.post(`/calls/${conversationId}/realtime-token`);
+        if (!data.token || !data.channel) {
+          throw new Error('The server did not return a Metered chat token.');
+        }
+        channelName = data.channel;
+        return data.token;
+      },
+    });
+    meteredClientRef.current = client;
+    setMeteredState('connecting');
+    setMeteredPeers([]);
+    setMeteredError(null);
+
+    const onStateChange = ({ to }) => {
+      if (cancelled) return;
+      setMeteredState(to);
+      if (to === 'reconnecting') setMeteredPeers([]);
+      if (to === 'connected') setMeteredError(null);
+    };
+    const onPresence = ({ channel: eventChannel, joined, left }) => {
+      if (cancelled || eventChannel !== channelName) return;
+      setMeteredPeers((current) => {
+        const peers = new Map(current.map((peer) => [peer.peerId, peer]));
+        for (const peer of left || []) peers.delete(peer.peerId);
+        for (const peer of joined || []) peers.set(peer.peerId, peer);
+        return [...peers.values()];
+      });
+    };
+    const onMessage = async ({ channel: eventChannel, from, fromMetadata, data }) => {
+      if (
+        cancelled ||
+        eventChannel !== channelName ||
+        data?.type !== 'chat-message' ||
+        typeof data.messageId !== 'string'
+      ) return;
+
+      try {
+        const { data: result } = await api.get(
+          `/messages/${conversationId}/message/${encodeURIComponent(data.messageId)}`
+        );
+        if (cancelled) return;
+        const message = result.message;
+        if (!message || message.senderId !== from) return;
+        const pendingTimer = pusherFallbackTimersRef.current.get(message.id);
+        if (pendingTimer) clearTimeout(pendingTimer);
+        pusherFallbackTimersRef.current.delete(message.id);
+
+        const incoming = message.senderId !== user.id;
+        const senderMetadata = fromMetadata;
+        const senderName = typeof senderMetadata?.username === 'string'
+          ? senderMetadata.username
+          : undefined;
+        const decoded = {
+          ...decodeHistoryMessage(message, user.id),
+          ...(incoming && senderName ? { senderName } : {}),
+        };
+        setMessagesByConv((previous) => {
+          const existing = previous[conversationId] || [];
+          const index = existing.findIndex((item) => item.id === message.id);
+          if (index >= 0) {
+            if (!incoming || !senderName || existing[index].senderName === senderName) return previous;
+            const updated = [...existing];
+            updated[index] = { ...updated[index], senderName };
+            return { ...previous, [conversationId]: updated };
+          }
+          return { ...previous, [conversationId]: [...existing, decoded] };
+        });
+        setConversations((previous) => bumpConversation(previous, conversationId, {
+          id: message.id,
+          kind: message.kind,
+          text: message.text,
+          senderId: message.senderId,
+          createdAt: message.createdAt,
+        }));
+      } catch (error) {
+        if (!cancelled) {
+          console.error('[metered-chat] failed to load the persisted message:', error);
+          setMeteredError('Live chat sync failed; messages remain available from the server.');
+        }
+      }
+    };
+    const onServerError = ({ code, message }) => {
+      if (cancelled) return;
+      console.error('[metered-chat] server rejected a realtime request:', code, message);
+      setMeteredError('Live chat encountered a server error.');
+    };
+    const onTokenProviderError = ({ err }) => {
+      if (cancelled) return;
+      console.error('[metered-chat] token refresh failed:', err);
+      setMeteredError('Could not refresh live chat authorization.');
+    };
+
+    client.on('state-change', onStateChange);
+    client.on('presence', onPresence);
+    client.on('message', onMessage);
+    client.on('server-error', onServerError);
+    client.on('token-provider-error', onTokenProviderError);
+
+    async function connect() {
+      await client.connect();
+      if (cancelled) return;
+      if (!channelName) throw new Error('The server did not authorize a Metered chat channel.');
+      await client.subscribe(channelName, { includeSenderMetadata: true });
+      if (!cancelled) {
+        meteredChannelRef.current = channelName;
+        setMeteredState('connected');
+      }
+    }
+
+    connect().catch((error) => {
+      if (!cancelled) {
+        console.error('[metered-chat] connection failed:', error);
+        setMeteredState('closed');
+        setMeteredError('Live chat is unavailable; saved messages will still sync through the app.');
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      client.off('state-change', onStateChange);
+      client.off('presence', onPresence);
+      client.off('message', onMessage);
+      client.off('server-error', onServerError);
+      client.off('token-provider-error', onTokenProviderError);
+      if (meteredClientRef.current === client) {
+        meteredClientRef.current = null;
+        meteredChannelRef.current = null;
+      }
+      client.close().catch((error) => {
+        console.error('[metered-chat] failed to close the client:', error);
+      });
+    };
+  }, [activeConversationId, user?.id, view]);
 
   // Diffs the shared online-user roster (from RealtimeProvider) against its
   // previous snapshot, and drops a system notice into any open-this-session
@@ -357,6 +530,24 @@ export default function Chat() {
         }],
       };
     });
+  }
+
+  async function publishMeteredNotice(conversationId, messageId) {
+    const client = meteredClientRef.current;
+    const meteredChannel = meteredChannelRef.current;
+    if (
+      !client ||
+      !meteredChannel ||
+      conversationId !== activeConversationIdRef.current ||
+      client.state !== 'connected'
+    ) return;
+
+    try {
+      await client.publish(meteredChannel, { type: 'chat-message', messageId });
+    } catch (error) {
+      console.error('[metered-chat] failed to publish a message notice:', error);
+      setMeteredError('Live chat sync failed; your message was saved.');
+    }
   }
 
   // Smart auto-scroll: jump to the newest message when the user is already
@@ -634,6 +825,7 @@ export default function Chat() {
       setConversations((prev) => bumpConversation(prev, activeConversationId, {
         id: data.messageId, kind: 'text', senderId: user.id, createdAt,
       }));
+      publishMeteredNotice(activeConversationId, data.messageId);
     } catch (err) {
       console.error(err);
       setSendError(describeSendError());
@@ -707,6 +899,7 @@ export default function Chat() {
     setConversations((prev) => bumpConversation(prev, activeConversationId, {
       id: data.messageId, kind: 'image', senderId: user.id, createdAt,
     }));
+    publishMeteredNotice(activeConversationId, data.messageId);
   }
 
   function onPickImage(e) {
@@ -750,6 +943,7 @@ export default function Chat() {
       setConversations((prev) => bumpConversation(prev, activeConversationId, {
         id: data.messageId, kind: 'voice', senderId: user.id, createdAt,
       }));
+      publishMeteredNotice(activeConversationId, data.messageId);
     } catch (err) {
       console.error(err);
       // Shows the server's actual reason (see the matching change in
@@ -806,6 +1000,7 @@ export default function Chat() {
       setConversations((prev) => bumpConversation(prev, activeConversationId, {
         id: data.messageId, kind, senderId: user.id, createdAt,
       }));
+      publishMeteredNotice(activeConversationId, data.messageId);
     } catch (err) {
       console.error(err);
       setSendError(describeSendError());
@@ -890,6 +1085,7 @@ export default function Chat() {
             partnerOnline={Boolean(activeConv && onlineUserIds.has(activeConv.partnerId))}
             showButton={Boolean(activeConv)}
             userId={user.id}
+            userName={user.displayName}
           />
           <ThemeToggle />
           {isAdmin && <ViewToggle active="chat" />}
@@ -966,6 +1162,28 @@ export default function Chat() {
                     />
                     {onlineUserIds.has(activeConv.partnerId) ? 'Online' : 'Offline'}
                   </span>
+                  {meteredPeers.map((peer) => (
+                    <span key={peer.peerId} className="chip bg-violet-500/10 border-violet-500/30 text-violet-300">
+                      {peer.metadata?.avatarUrl && (
+                        <img
+                          src={peer.metadata.avatarUrl}
+                          alt=""
+                          className="mr-1.5 inline-block h-4 w-4 rounded-full object-cover align-middle"
+                        />
+                      )}
+                      {peer.metadata?.username || 'Anonymous'}
+                    </span>
+                  ))}
+                  {meteredState === 'reconnecting' && (
+                    <span role="status" className="chip bg-amber-500/10 border-amber-500/30 text-amber-300">
+                      Reconnecting…
+                    </span>
+                  )}
+                  {meteredError && (
+                    <span role="status" className="chip bg-coral-500/10 border-coral-500/30 text-coral-400">
+                      {meteredError}
+                    </span>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <FriendActionButton
@@ -1021,7 +1239,7 @@ export default function Chat() {
                   // comparing `incoming` to the previous message is enough.
                   const prev = activeMessages[i - 1];
                   const showName = i === 0 || prev.kind === 'system' || prev.incoming !== m.incoming;
-                  const senderName = m.incoming ? (activeConv.partnerDisplayName || 'Anonymous') : 'You';
+                  const senderName = m.incoming ? (m.senderName || activeConv.partnerDisplayName || 'Anonymous') : 'You';
                   const repliedTo = m.replyToId ? activeMessages.find((x) => x.id === m.replyToId) : null;
                   return (
                     <MessageBubble

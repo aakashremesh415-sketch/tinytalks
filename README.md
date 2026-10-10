@@ -35,18 +35,16 @@ write to local disk and expect the file to still be there on the next
 request. So, compared to a plain Node/Express deploy, three things are
 different here on purpose:
 
-- **Realtime is Pusher Channels, not Socket.io.** Matching a partner and
-  relaying messages both happen as ordinary POST requests
-  (`/api/queue/join`, `/api/messages/send`); the server pushes an event to
-  Pusher, and Pusher's own infrastructure holds the live connection to
-  each browser. See `server/src/lib/pusher.js`.
-- **Voice calls use WebRTC audio.** The existing Pusher setup relays call
-  signaling only; audio travels directly between browsers when possible,
-  with no server-side media stream. Calls need microphone permission and
-  a secure context (HTTPS, or localhost). STUN is tried first; when a
-  direct path is not possible, a configured TURN server relays audio
-  between networks that block peer-to-peer connections. Without TURN
-  settings, calls can still fail on restrictive networks.
+- **Realtime uses Pusher Channels and Metered Realtime.** Pusher carries
+  matchmaking, call invitations, app-wide notifications, and fallback
+  delivery for chat messages. An active private conversation uses Metered
+  `SignallingClient` for chat notices and a live peer roster; message
+  content remains persisted and fetched through the authenticated app API.
+- **Calls use Metered Frame.** Each call gets an expiring private Metered
+  room and room-scoped access tokens minted by the server. Camera, audio,
+  and TURN relay are handled by Metered's embedded video-call client.
+  Calls need camera/microphone permission and a secure context (HTTPS, or
+  localhost).
 - **Images and verification photos go to Vercel Blob, not local disk.**
   See `server/src/lib/storage.js` — swap this file if you'd rather use
   S3 or another provider.
@@ -103,8 +101,10 @@ Project → **Settings** → **Environment Variables**:
 | `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD` | your first admin login |
 | `PUSHER_APP_ID` / `PUSHER_KEY` / `PUSHER_SECRET` / `PUSHER_CLUSTER` | from Pusher |
 | `VITE_PUSHER_KEY` / `VITE_PUSHER_CLUSTER` | same key/cluster, exposed to the client build |
-| `TURN_URLS` | comma-separated TURN URLs from a TURN provider/server that supports REST credentials, including TCP/TLS endpoints when available |
-| `TURN_SHARED_SECRET` | server-side shared secret for generating time-limited TURN credentials; never expose it as a `VITE_` variable |
+| `METERED_APP_NAME` | your Metered app slug from the dashboard; replace the `YOUR_APP_NAME` placeholder with the real slug |
+| `METERED_SECRET_KEY` | Metered Video API secret used server-side to create private call rooms and mint room access tokens |
+| `METERED_REALTIME_SK_ID` | Metered Realtime signing key ID (the `sk_id_...` value) |
+| `METERED_REALTIME_SK` | Metered Realtime signing secret; server-side only, never expose it as a `VITE_` variable |
 | `CRON_SECRET` | any long random string (Vercel sends it back automatically when calling the cron route) |
 | `CLIENT_ORIGIN` | your deployed URL, e.g. `https://tinytalks.live` |
 | `SMTP_*` | optional — see below |
@@ -161,16 +161,18 @@ to a real facial age-estimation + liveness vendor (Yoti, Persona, Veriff,
 Incode, etc.), image sharing stays disabled for everyone — that's the
 intended safe default, not a bug.
 
-**Voice-call TURN relay**: configure `TURN_URLS` and `TURN_SHARED_SECRET`
-in both local server environment and the Vercel project's server-side
-environment variables using a TURN provider/server that supports the
-coturn/TURN REST shared-secret credential format. The API creates
-user-specific credentials that expire after 24 hours. Add the provider's
-UDP and TCP/TLS TURN URLs (ideally including a TLS endpoint on port 443)
-to improve connectivity on restrictive networks. TURN relays audio and
-will incur the provider's bandwidth charges. Calls without TURN configured
-retain the existing STUN-only behavior and are not guaranteed to connect
-between different networks.
+**Metered calls and realtime chat**: set `METERED_APP_NAME`,
+`METERED_SECRET_KEY`, `METERED_REALTIME_SK_ID`, and
+`METERED_REALTIME_SK` in the server environment (including Vercel Production
+and Preview as needed). `METERED_SECRET_KEY` creates expiring, private
+Metered Frame rooms and mints room-scoped access tokens. The browser receives
+only the access token for its call room. `METERED_REALTIME_SK` signs
+conversation-scoped JWTs with the user's display name and avatar metadata;
+it is never sent to the browser. The client uses `SignallingClient` for
+per-conversation message notices and presence, while messages remain
+persisted and authorized by the app API. The SDK automatically re-subscribes
+to its channel after a WebSocket reconnect; the app requests a fresh JWT
+through `tokenProvider` and does not issue duplicate subscriptions.
 
 ## Known limits worth knowing about
 

@@ -2,21 +2,41 @@ import { useEffect, useRef, useState } from 'react';
 import { api, getErrorMessage } from '../lib/api.js';
 
 const IDLE_CALL = { status: 'idle' };
+const FRAME_SDK_URL = 'https://cdn.metered.ca/sdk/frame/1.4.3/sdk-frame.min.js';
+let frameSdkPromise;
 
-export default function VoiceCall({ channel, conversationId, partnerId, partnerName, partnerOnline, showButton, userId }) {
+function loadFrameSdk() {
+  if (window.MeteredFrame) return Promise.resolve();
+  if (!frameSdkPromise) {
+    frameSdkPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = FRAME_SDK_URL;
+      script.async = true;
+      script.onload = () => {
+        if (window.MeteredFrame) resolve();
+        else reject(new Error('Metered Frame SDK did not initialize.'));
+      };
+      script.onerror = () => reject(new Error('Could not load the Metered Frame SDK.'));
+      document.head.appendChild(script);
+    }).catch((error) => {
+      frameSdkPromise = null;
+      throw error;
+    });
+  }
+  return frameSdkPromise;
+}
+
+export default function VoiceCall({ channel, conversationId, partnerId, partnerName, partnerOnline, showButton, userId, userName }) {
   const [call, setCall] = useState(IDLE_CALL);
   const [feedback, setFeedback] = useState('');
-  const [muted, setMuted] = useState(false);
   const [duration, setDuration] = useState(0);
   const callRef = useRef(IDLE_CALL);
-  const peerRef = useRef(null);
-  const streamRef = useRef(null);
-  const audioRef = useRef(null);
   const callIdRef = useRef(null);
   const targetRef = useRef(null);
-  const pendingCandidatesRef = useRef([]);
   const timeoutRef = useRef(null);
-  const connectionTimeoutRef = useRef(null);
+  const frameContainerRef = useRef(null);
+  const frameRef = useRef(null);
+  const frameJoinedCallRef = useRef(null);
   const callLockReleaseRef = useRef(null);
   const isMountedRef = useRef(true);
 
@@ -41,63 +61,33 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
         });
       }).catch((error) => {
         console.error('[voice-call] failed to coordinate calls across tabs:', error);
-        if (isMountedRef.current) setFeedback('Could not coordinate voice calls across tabs.');
+        if (isMountedRef.current) setFeedback('Could not coordinate calls across tabs.');
         resolve(false);
       });
     });
   }
 
   function updateCall(next) {
-    if (next.status === 'connecting' && callRef.current.status !== 'connecting') {
-      clearTimeout(connectionTimeoutRef.current);
-      connectionTimeoutRef.current = setTimeout(() => {
-        if (callRef.current.status !== 'connecting') return;
-        const callId = callRef.current.callId;
-        sendHangup(callId);
-        finishCall('Could not establish a connection. Check the network or TURN server settings and try again.');
-      }, 30000);
-    } else if (next.status === 'active') {
-      clearTimeout(connectionTimeoutRef.current);
-      connectionTimeoutRef.current = null;
-    }
     callRef.current = next;
     if (isMountedRef.current) setCall(next);
   }
 
-  function closeMedia() {
+  function finishCall(message = '') {
     clearTimeout(timeoutRef.current);
-    clearTimeout(connectionTimeoutRef.current);
-    releaseCallLock();
     timeoutRef.current = null;
-    connectionTimeoutRef.current = null;
-    if (peerRef.current) {
-      peerRef.current.onicecandidate = null;
-      peerRef.current.ontrack = null;
-      peerRef.current.onconnectionstatechange = null;
-      peerRef.current.close();
-      peerRef.current = null;
-    }
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    if (audioRef.current) audioRef.current.srcObject = null;
-    pendingCandidatesRef.current = [];
+    releaseCallLock();
     callIdRef.current = null;
     targetRef.current = null;
+    updateCall(IDLE_CALL);
     if (isMountedRef.current) {
-      setMuted(false);
       setDuration(0);
+      setFeedback(message);
     }
   }
 
-  function finishCall(message = '') {
-    closeMedia();
-    updateCall(IDLE_CALL);
-    if (isMountedRef.current) setFeedback(message);
-  }
-
-  async function sendSignal(type, data, callId = callIdRef.current, targetConversationId = targetRef.current?.conversationId) {
+  async function sendSignal(type, callId = callIdRef.current, targetConversationId = targetRef.current?.conversationId) {
     try {
-      await api.post(`/calls/${targetConversationId}/signal`, { callId, type, data });
+      await api.post(`/calls/${targetConversationId}/signal`, { callId, type });
       return true;
     } catch (error) {
       if (isMountedRef.current) setFeedback(getErrorMessage(error, "Couldn't send the call signal."));
@@ -113,112 +103,42 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
     }
   }
 
-  async function createPeerConnection(callId) {
-    const { data } = await api.get('/calls/ice-servers');
-    if (!Array.isArray(data.iceServers) || data.iceServers.length === 0) {
-      throw new Error('Voice call connection settings are unavailable.');
-    }
-    if (callIdRef.current !== callId) return null;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    if (callIdRef.current !== callId) {
-      stream.getTracks().forEach((track) => track.stop());
-      return null;
-    }
-    streamRef.current = stream;
-    const peer = new RTCPeerConnection({ iceServers: data.iceServers });
-    peerRef.current = peer;
-    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
-
-    peer.onicecandidate = (event) => {
-      if (!event.candidate || !callIdRef.current) return;
-      sendSignal('candidate', event.candidate.toJSON()).then((sent) => {
-        if (!sent) finishCall("Couldn't establish the call connection.");
-      });
-    };
-    peer.ontrack = (event) => {
-      if (audioRef.current) {
-        audioRef.current.srcObject = event.streams[0];
-        audioRef.current.play().catch(() => {
-          if (isMountedRef.current) setFeedback('Tap the call audio to start playback.');
-        });
-      }
-    };
-    peer.onconnectionstatechange = () => {
-      if (peer.connectionState === 'connected') {
-        clearTimeout(connectionTimeoutRef.current);
-        connectionTimeoutRef.current = null;
-        updateCall({ ...callRef.current, status: 'active' });
-        setFeedback('');
-      } else if (peer.connectionState === 'failed') {
-        finishCall('Could not establish a connection. Check the network or TURN server settings and try again.');
-      } else if (peer.connectionState === 'disconnected') {
-        clearTimeout(connectionTimeoutRef.current);
-        connectionTimeoutRef.current = setTimeout(() => {
-          if (peer.connectionState === 'disconnected') finishCall('The call connection was lost.');
-        }, 10000);
-      }
-    };
-    return peer;
-  }
-
-  async function addCandidate(candidate) {
-    const peer = peerRef.current;
-    if (!peer) return;
-    if (!peer.remoteDescription) {
-      pendingCandidatesRef.current.push(candidate);
-      return;
-    }
-    await peer.addIceCandidate(new RTCIceCandidate(candidate));
-  }
-
-  async function flushCandidates() {
-    const candidates = pendingCandidatesRef.current.splice(0);
-    for (const candidate of candidates) {
-      await peerRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
-    }
-  }
-
   async function startCall() {
     if (callRef.current.status !== 'idle' || !partnerOnline || !conversationId || !partnerId || !channel) return;
     setFeedback('');
     if (!(await acquireCallLock())) {
-      setFeedback('A voice call is already active in another chat tab.');
+      setFeedback('A call is already active in another chat tab.');
       return;
     }
     if (callRef.current.status !== 'idle') {
       releaseCallLock();
       return;
     }
-    targetRef.current = { conversationId, partnerId, partnerName };
+
     const callId = crypto.randomUUID();
     callIdRef.current = callId;
+    targetRef.current = { conversationId, partnerId, partnerName };
     updateCall({ status: 'preparing', callId, partnerName, direction: 'outgoing' });
+
     try {
-      if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) {
-        finishCall();
-        setFeedback("This browser doesn't support voice calls.");
-        return;
-      }
-      const peer = await createPeerConnection(callId);
-      if (!peer || callRef.current.callId !== callId || callRef.current.status !== 'preparing') return;
-      updateCall({ status: 'outgoing', callId, partnerName, direction: 'outgoing' });
-      const sent = await sendSignal('invite');
-      if (!sent && callRef.current.callId === callId) finishCall("Couldn't start the call.");
-      else if (sent && callRef.current.callId === callId && callRef.current.status === 'outgoing') {
+      const { data: meeting } = await api.post(`/calls/${conversationId}/frame-room`, { callId });
+      if (callIdRef.current !== callId || callRef.current.status !== 'preparing') return;
+      updateCall({ status: 'outgoing', callId, meeting, partnerName, direction: 'outgoing' });
+      const sent = await sendSignal('invite', callId, conversationId);
+      if (!sent && callIdRef.current === callId) {
+        finishCall("Couldn't start the call.");
+      } else if (sent && callIdRef.current === callId && callRef.current.status === 'outgoing') {
         timeoutRef.current = setTimeout(() => {
           if (callRef.current.status === 'outgoing' && callRef.current.callId === callId) {
-            sendHangup(callId);
+            sendHangup(callId, conversationId);
             finishCall('No answer.');
           }
-        }, 45000);
+        }, 45_000);
       }
     } catch (error) {
-      if (callRef.current.callId !== callId) return;
-      closeMedia();
-      updateCall(IDLE_CALL);
-      setFeedback(error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError'
-        ? 'Allow microphone access to make a voice call.'
-        : getErrorMessage(error, 'Could not access your microphone.'));
+      if (callIdRef.current !== callId) return;
+      console.error('[voice-call] failed to prepare Metered room:', error);
+      finishCall(getErrorMessage(error, 'Could not prepare the video call.'));
     }
   }
 
@@ -227,62 +147,51 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
     if (currentCall.status !== 'incoming') return;
     setFeedback('');
     if (!(await acquireCallLock())) {
-      finishCall('Another chat tab is already handling a voice call.');
+      const callId = currentCall.callId;
+      sendSignal('reject', callId, targetRef.current?.conversationId);
+      finishCall('Another chat tab is already handling a call.');
       return;
     }
     if (callRef.current.status !== 'incoming' || callRef.current.callId !== currentCall.callId) {
       releaseCallLock();
       return;
     }
-    updateCall({ ...currentCall, status: 'preparing', direction: 'incoming' });
+
     try {
-      if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) {
-        updateCall(currentCall);
-        setFeedback("This browser doesn't support voice calls.");
-        return;
-      }
-      const peer = await createPeerConnection(currentCall.callId);
-      if (!peer || callRef.current.callId !== currentCall.callId || callRef.current.status !== 'preparing') return;
-      updateCall({ ...callRef.current, status: 'connecting', partnerName: currentCall.fromDisplayName || partnerName });
-      const sent = await sendSignal('accept', undefined, currentCall.callId);
-      if (!sent) finishCall("Couldn't accept the call.");
+      const target = targetRef.current;
+      const { data: meeting } = await api.post(`/calls/${target.conversationId}/frame-token`, { callId: currentCall.callId });
+      if (callRef.current.status !== 'incoming' || callRef.current.callId !== currentCall.callId) return;
+      updateCall({ ...currentCall, status: 'joining', meeting, partnerName: target.partnerName, direction: 'incoming' });
+      const sent = await sendSignal('accept', currentCall.callId, target.conversationId);
+      if (!sent && callRef.current.callId === currentCall.callId) finishCall("Couldn't accept the call.");
     } catch (error) {
       if (callRef.current.callId !== currentCall.callId) return;
-      sendSignal('reject', undefined, currentCall.callId);
-      finishCall(error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError'
-        ? 'Allow microphone access to answer the call.'
-        : getErrorMessage(error, 'Could not access your microphone.'));
+      console.error('[voice-call] failed to prepare Metered room access:', error);
+      sendSignal('reject', currentCall.callId, targetRef.current?.conversationId);
+      finishCall(getErrorMessage(error, 'Could not join the video call.'));
     }
   }
 
   function declineCall() {
-    const callId = callRef.current.callId;
-    sendSignal('reject', undefined, callId);
+    const currentCall = callRef.current;
+    if (currentCall.callId) sendSignal('reject', currentCall.callId);
     finishCall('');
   }
 
   function hangUp() {
     const currentCall = callRef.current;
-    if (currentCall.callId && !(currentCall.direction === 'outgoing' && currentCall.status === 'preparing')) {
-      sendHangup(currentCall.callId);
-    }
+    if (currentCall.callId) sendHangup(currentCall.callId);
     finishCall('');
-  }
-
-  function toggleMute() {
-    const nextMuted = !muted;
-    streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !nextMuted; });
-    setMuted(nextMuted);
   }
 
   useEffect(() => {
     isMountedRef.current = true;
     if (!channel) return undefined;
 
-    const onSignal = async (signal) => {
+    const onSignal = (signal) => {
       if (signal.type === 'invite') {
         if (callRef.current.status !== 'idle') {
-          sendSignal('reject', undefined, signal.callId, signal.conversationId);
+          sendSignal('reject', signal.callId, signal.conversationId);
           return;
         }
         targetRef.current = {
@@ -291,7 +200,12 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
           partnerName: signal.fromDisplayName || 'Anonymous',
         };
         callIdRef.current = signal.callId;
-        updateCall({ status: 'incoming', callId: signal.callId, fromDisplayName: signal.fromDisplayName, direction: 'incoming' });
+        updateCall({
+          status: 'incoming',
+          callId: signal.callId,
+          partnerName: signal.fromDisplayName || 'Anonymous',
+          direction: 'incoming',
+        });
         return;
       }
       if (
@@ -300,40 +214,14 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
         signal.callId !== callIdRef.current
       ) return;
 
-      try {
-        if (signal.type === 'accept' && callRef.current.status === 'outgoing') {
-          clearTimeout(timeoutRef.current);
-          timeoutRef.current = null;
-          const peer = peerRef.current;
-          const offer = await peer.createOffer();
-          await peer.setLocalDescription(offer);
-          updateCall({ ...callRef.current, status: 'connecting' });
-          if (!(await sendSignal('offer', { type: peer.localDescription.type, sdp: peer.localDescription.sdp }))) {
-            finishCall("Couldn't start the call.");
-          }
-        } else if (signal.type === 'offer' && callRef.current.status === 'connecting') {
-          const peer = peerRef.current;
-          await peer.setRemoteDescription(new RTCSessionDescription(signal.data));
-          await flushCandidates();
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
-          if (!(await sendSignal('answer', { type: peer.localDescription.type, sdp: peer.localDescription.sdp }))) {
-            finishCall("Couldn't answer the call.");
-          }
-        } else if (signal.type === 'answer' && callRef.current.status === 'connecting') {
-          await peerRef.current.setRemoteDescription(new RTCSessionDescription(signal.data));
-          await flushCandidates();
-        } else if (signal.type === 'candidate') {
-          await addCandidate(signal.data);
-        } else if (signal.type === 'reject') {
-          finishCall('Call declined.');
-        } else if (signal.type === 'hangup') {
-          finishCall('The other person ended the call.');
-        }
-      } catch (error) {
-        console.error('[voice-call] signaling failed:', error);
-        finishCall('The call could not be connected.');
-        sendHangup(signal.callId, signal.conversationId);
+      if (signal.type === 'accept' && callRef.current.status === 'outgoing') {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+        updateCall({ ...callRef.current, status: 'joining' });
+      } else if (signal.type === 'reject') {
+        finishCall('Call declined.');
+      } else if (signal.type === 'hangup') {
+        finishCall('The other person ended the call.');
       }
     };
 
@@ -372,10 +260,24 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
         });
       }
       isMountedRef.current = false;
-      closeMedia();
+      releaseCallLock();
       callRef.current = IDLE_CALL;
+      callIdRef.current = null;
+      targetRef.current = null;
     };
   }, [channel, userId]);
+
+  useEffect(() => {
+    if (call.status !== 'joining') return undefined;
+    const callId = call.callId;
+    const timeout = setTimeout(() => {
+      if (callRef.current.callId === callId && callRef.current.status === 'joining') {
+        sendHangup(callId);
+        finishCall('Could not join the video call. Check camera and microphone permissions.');
+      }
+    }, 30_000);
+    return () => clearTimeout(timeout);
+  }, [call.status, call.callId]);
 
   useEffect(() => {
     if (call.status !== 'active') return undefined;
@@ -384,8 +286,71 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
     return () => clearInterval(interval);
   }, [call.status]);
 
+  const shouldJoinMeeting = call.status === 'joining' || call.status === 'active';
+  useEffect(() => {
+    if (!shouldJoinMeeting || !call.meeting || !call.callId) return undefined;
+    const container = frameContainerRef.current;
+    if (!container) return undefined;
+
+    let cancelled = false;
+    let frame;
+    const mountFrame = async () => {
+      await loadFrameSdk();
+      if (cancelled) return;
+      frame = new window.MeteredFrame();
+      frameRef.current = frame;
+      const callId = call.callId;
+      frame.on('meetingJoined', () => {
+        if (callRef.current.callId !== callId || callRef.current.status === 'idle') return;
+        frameJoinedCallRef.current = callId;
+        setFeedback('');
+        updateCall({ ...callRef.current, status: 'active' });
+      });
+      frame.on('meetingLeft', () => {
+        if (callRef.current.callId !== callId || callRef.current.status === 'idle') return;
+        frameJoinedCallRef.current = null;
+        sendHangup(callId);
+        finishCall('');
+      });
+      frame.init({
+        roomURL: call.meeting.roomURL,
+        accessToken: call.meeting.accessToken,
+        width: '100%',
+        height: '100%',
+        autoJoin: true,
+        name: userName || 'Anonymous',
+        joinVideoOn: true,
+        joinAudioOn: true,
+        disableChat: true,
+        disableScreenSharing: true,
+        showInviteBox: false,
+      }, container);
+    };
+
+    mountFrame().catch((error) => {
+      if (cancelled) return;
+      console.error('[voice-call] Metered Frame failed to load:', error);
+      sendHangup(call.callId);
+      finishCall(getErrorMessage(error, 'Could not load the video call.'));
+    });
+
+    return () => {
+      cancelled = true;
+      if (frameRef.current === frame) frameRef.current = null;
+      if (frame && frameJoinedCallRef.current === call.callId) {
+        frameJoinedCallRef.current = null;
+        try {
+          frame.leave();
+        } catch (error) {
+          console.error('[voice-call] failed to leave the Metered meeting:', error);
+        }
+      }
+      container.replaceChildren();
+    };
+  }, [call.callId, call.meeting, shouldJoinMeeting, userName]);
+
   const callVisible = call.status !== 'idle';
-  const currentPartnerName = call.partnerName || call.fromDisplayName || partnerName || 'Your chat partner';
+  const currentPartnerName = call.partnerName || partnerName || 'Your chat partner';
   const statusText = call.status === 'incoming'
     ? `${currentPartnerName} is calling`
     : call.status === 'outgoing'
@@ -402,39 +367,41 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
           className="btn-secondary !py-1.5 !px-3 text-sm"
           onClick={startCall}
           disabled={!partnerOnline || !channel || call.status !== 'idle'}
-          title={partnerOnline ? 'Start a free voice call' : 'Your chat partner is offline'}
+          title={partnerOnline ? 'Start a video call' : 'Your chat partner is offline'}
         >
-          ☎ Voice call
+          ▣ Video call
         </button>
       )}
       {feedback && !callVisible && (
         <span role="status" className="basis-full text-right text-xs text-coral-500">{feedback}</span>
       )}
       {callVisible && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Voice call">
-          <div className="card w-full max-w-sm p-6 text-center space-y-4">
-            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-violet-500/15 text-3xl">☎</div>
-            <div>
-              <p className="font-display text-lg font-semibold">{currentPartnerName}</p>
-              <p className="text-sm text-slate-500 dark:text-slate-400">{statusText}</p>
-            </div>
-            {feedback && <p role="status" className="text-sm text-coral-500">{feedback}</p>}
-            <audio ref={audioRef} autoPlay playsInline />
-            {call.status === 'incoming' ? (
-              <div className="flex justify-center gap-3">
-                <button type="button" className="btn-secondary" onClick={declineCall}>Decline</button>
-                <button type="button" className="btn-primary" onClick={acceptCall}>Answer</button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Video call">
+          <div className="card flex h-[min(88vh,900px)] w-full max-w-5xl flex-col gap-3 p-3 sm:p-5">
+            <div className="flex shrink-0 items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate font-display text-lg font-semibold">{currentPartnerName}</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400">{statusText}</p>
               </div>
-            ) : (
-              <div className="flex justify-center gap-3">
-                {call.status === 'active' && (
-                  <button type="button" className="btn-secondary" onClick={toggleMute}>
-                    {muted ? 'Unmute' : 'Mute'}
-                  </button>
-                )}
+              {call.status !== 'incoming' && (
                 <button type="button" className="btn-secondary !bg-coral-500 !text-white" onClick={hangUp}>
                   End call
                 </button>
+              )}
+            </div>
+            {feedback && <p role="status" className="shrink-0 text-sm text-coral-500">{feedback}</p>}
+            <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl bg-black">
+              <div className="absolute inset-0" ref={frameContainerRef} />
+              {call.status !== 'active' && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-300">
+                  Connecting to the meeting…
+                </div>
+              )}
+            </div>
+            {call.status === 'incoming' && (
+              <div className="flex shrink-0 justify-center gap-3">
+                <button type="button" className="btn-secondary" onClick={declineCall}>Decline</button>
+                <button type="button" className="btn-primary" onClick={acceptCall}>Answer</button>
               </div>
             )}
           </div>

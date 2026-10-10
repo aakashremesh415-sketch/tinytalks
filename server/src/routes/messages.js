@@ -51,6 +51,40 @@ router.get('/conversations', requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
+router.get('/:conversationId/message/:messageId', requireAuth, asyncHandler(async (req, res) => {
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: req.params.conversationId },
+    select: { participantAId: true, participantBId: true },
+  });
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found.' });
+  if (![conversation.participantAId, conversation.participantBId].includes(req.user.id)) {
+    return res.status(403).json({ error: 'Not a participant in this conversation.' });
+  }
+
+  const message = await prisma.message.findUnique({
+    where: { id: req.params.messageId },
+    include: { image: true, voiceNote: true, reactions: true },
+  });
+  if (!message || message.conversationId !== req.params.conversationId) {
+    return res.status(404).json({ error: 'Message not found.' });
+  }
+
+  res.json({
+    message: {
+      id: message.id,
+      kind: message.kind,
+      text: message.text,
+      senderId: message.senderId,
+      replyToId: message.replyToId,
+      editedAt: message.editedAt,
+      createdAt: message.createdAt,
+      image: message.image ? publicImage(message.image) : null,
+      voiceNote: message.voiceNote ? publicVoiceNote(message.voiceNote) : null,
+      reactions: message.reactions,
+    },
+  });
+}));
+
 // Full history for one conversation — same participant check as /send.
 // Image entries carry availability/viewed state so the client can render
 // an already-self-destructed image as gone without a wasted fetch attempt.
