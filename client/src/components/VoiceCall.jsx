@@ -138,7 +138,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
     } catch (error) {
       if (callIdRef.current !== callId) return;
       console.error('[voice-call] failed to prepare Metered room:', error);
-      finishCall(getErrorMessage(error, 'Could not prepare the video call.'));
+      finishCall(getErrorMessage(error, 'Could not prepare the voice call.'));
     }
   }
 
@@ -168,7 +168,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
       if (callRef.current.callId !== currentCall.callId) return;
       console.error('[voice-call] failed to prepare Metered room access:', error);
       sendSignal('reject', currentCall.callId, targetRef.current?.conversationId);
-      finishCall(getErrorMessage(error, 'Could not join the video call.'));
+      finishCall(getErrorMessage(error, 'Could not join the voice call.'));
     }
   }
 
@@ -273,7 +273,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
     const timeout = setTimeout(() => {
       if (callRef.current.callId === callId && callRef.current.status === 'joining') {
         sendHangup(callId);
-        finishCall('Could not join the video call. Check camera and microphone permissions.');
+        finishCall('Could not join the voice call. Check microphone permission.');
       }
     }, 30_000);
     return () => clearTimeout(timeout);
@@ -319,7 +319,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
         height: '100%',
         autoJoin: true,
         name: userName || 'Anonymous',
-        joinVideoOn: true,
+        joinVideoOn: false,
         joinAudioOn: true,
         disableChat: true,
         disableScreenSharing: true,
@@ -331,7 +331,7 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
       if (cancelled) return;
       console.error('[voice-call] Metered Frame failed to load:', error);
       sendHangup(call.callId);
-      finishCall(getErrorMessage(error, 'Could not load the video call.'));
+      finishCall(getErrorMessage(error, 'Could not load the voice call.'));
     });
 
     return () => {
@@ -367,17 +367,17 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
           className="btn-secondary !py-1.5 !px-3 text-sm"
           onClick={startCall}
           disabled={!partnerOnline || !channel || call.status !== 'idle'}
-          title={partnerOnline ? 'Start a video call' : 'Your chat partner is offline'}
+          title={partnerOnline ? 'Start a voice call' : 'Your chat partner is offline'}
         >
-          ▣ Video call
+          ☎ Voice call
         </button>
       )}
       {feedback && !callVisible && (
         <span role="status" className="basis-full text-right text-xs text-coral-500">{feedback}</span>
       )}
       {callVisible && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Video call">
-          <div className="card flex h-[min(88vh,900px)] w-full max-w-5xl flex-col gap-3 p-3 sm:p-5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Voice call">
+          <div className="card flex h-[min(70vh,640px)] w-full max-w-xl flex-col gap-3 p-3 sm:p-5">
             <div className="flex shrink-0 items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="truncate font-display text-lg font-semibold">{currentPartnerName}</p>
@@ -390,11 +390,11 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
               )}
             </div>
             {feedback && <p role="status" className="shrink-0 text-sm text-coral-500">{feedback}</p>}
-            <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl bg-black">
+            <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl">
               <div className="absolute inset-0" ref={frameContainerRef} />
               {call.status !== 'active' && (
-                <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-300">
-                  Connecting to the meeting…
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500 dark:text-slate-300">
+                  Connecting to the voice call…
                 </div>
               )}
             </div>
