@@ -149,7 +149,6 @@ export default function Chat() {
   const [sendError, setSendError] = useState(null);
   const [meteredState, setMeteredState] = useState('idle');
   const [meteredPeers, setMeteredPeers] = useState([]);
-  const [meteredError, setMeteredError] = useState(null);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
   const meteredClientRef = useRef(null);
@@ -433,19 +432,16 @@ export default function Chat() {
       } catch (error) {
         if (!cancelled) {
           console.error('[metered-chat] failed to load the persisted message:', error);
-          setMeteredError('Live chat sync failed; messages remain available from the server.');
         }
       }
     };
     const onServerError = ({ code, message }) => {
       if (cancelled) return;
       console.error('[metered-chat] server rejected a realtime request:', code, message);
-      setMeteredError('Live chat encountered a server error.');
     };
     const onTokenProviderError = ({ err }) => {
       if (cancelled) return;
       console.error('[metered-chat] token refresh failed:', err);
-      setMeteredError('Could not refresh live chat authorization.');
     };
 
     client.on('state-change', onStateChange);
@@ -469,7 +465,6 @@ export default function Chat() {
       if (!cancelled) {
         console.error('[metered-chat] connection failed:', error);
         setMeteredState('closed');
-        setMeteredError('Live chat is unavailable; saved messages will still sync through the app.');
       }
     });
 
@@ -546,7 +541,6 @@ export default function Chat() {
       await client.publish(meteredChannel, { type: 'chat-message', messageId });
     } catch (error) {
       console.error('[metered-chat] failed to publish a message notice:', error);
-      setMeteredError('Live chat sync failed; your message was saved.');
     }
   }
 
@@ -1177,11 +1171,6 @@ export default function Chat() {
                   {meteredState === 'reconnecting' && (
                     <span role="status" className="chip bg-amber-500/10 border-amber-500/30 text-amber-300">
                       Reconnecting…
-                    </span>
-                  )}
-                  {meteredError && (
-                    <span role="status" className="chip bg-coral-500/10 border-coral-500/30 text-coral-400">
-                      {meteredError}
                     </span>
                   )}
                 </div>
