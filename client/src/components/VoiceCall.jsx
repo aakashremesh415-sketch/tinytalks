@@ -26,6 +26,15 @@ function loadFrameSdk() {
   return frameSdkPromise;
 }
 
+async function requestMicrophonePermission() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('Microphone access is unavailable. Open this site in Safari or Chrome over HTTPS.');
+  }
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  stream.getTracks().forEach((track) => track.stop());
+}
+
 export default function VoiceCall({ channel, conversationId, partnerId, partnerName, partnerOnline, showButton, userId, userName }) {
   const [call, setCall] = useState(IDLE_CALL);
   const [feedback, setFeedback] = useState('');
@@ -106,6 +115,14 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
   async function startCall() {
     if (callRef.current.status !== 'idle' || !partnerOnline || !conversationId || !partnerId || !channel) return;
     setFeedback('');
+    try {
+      await requestMicrophonePermission();
+    } catch (error) {
+      console.error('[voice-call] microphone permission was not granted:', error);
+      setFeedback(getErrorMessage(error, 'Allow microphone access to start a voice call.'));
+      return;
+    }
+
     if (!(await acquireCallLock())) {
       setFeedback('A call is already active in another chat tab.');
       return;
@@ -146,6 +163,14 @@ export default function VoiceCall({ channel, conversationId, partnerId, partnerN
     const currentCall = callRef.current;
     if (currentCall.status !== 'incoming') return;
     setFeedback('');
+    try {
+      await requestMicrophonePermission();
+    } catch (error) {
+      console.error('[voice-call] microphone permission was not granted:', error);
+      setFeedback(getErrorMessage(error, 'Allow microphone access to answer the voice call.'));
+      return;
+    }
+
     if (!(await acquireCallLock())) {
       const callId = currentCall.callId;
       sendSignal('reject', callId, targetRef.current?.conversationId);
