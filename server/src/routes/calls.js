@@ -90,7 +90,13 @@ function frameRoomName(callId) {
 
 async function createFrameAccessToken(roomName) {
   const expireUnixSec = Math.floor(Date.now() / 1000) + FRAME_ROOM_TTL_SECONDS;
-  const result = await meteredRequest('token', { roomName, expireUnixSec });
+  const result = await meteredRequest('token', {
+    roomName,
+    expireUnixSec,
+    disableVideo: true,
+    disableScreenSharing: true,
+    joinAudioOn: true,
+  });
   if (typeof result?.token !== 'string' || !result.token) {
     throw new Error('Metered did not return a room access token.');
   }
@@ -158,7 +164,6 @@ router.post('/:conversationId/frame-room', requireAuth, asyncHandler(async (req,
       enableRequestToJoin: false,
       enableChat: false,
       enableScreenSharing: false,
-      audioOnlyRoom: true,
       joinVideoOn: false,
       joinAudioOn: true,
       expireUnixSec,
