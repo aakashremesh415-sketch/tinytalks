@@ -345,7 +345,6 @@ export default function Chat() {
     if (view !== 'thread' || !activeConversationId || !user?.id) {
       setMeteredState('idle');
       setMeteredPeers([]);
-      setMeteredError(null);
       return undefined;
     }
 
@@ -366,13 +365,11 @@ export default function Chat() {
     meteredClientRef.current = client;
     setMeteredState('connecting');
     setMeteredPeers([]);
-    setMeteredError(null);
 
     const onStateChange = ({ to }) => {
       if (cancelled) return;
       setMeteredState(to);
       if (to === 'reconnecting') setMeteredPeers([]);
-      if (to === 'connected') setMeteredError(null);
     };
     const onPresence = ({ channel: eventChannel, joined, left }) => {
       if (cancelled || eventChannel !== channelName) return;
