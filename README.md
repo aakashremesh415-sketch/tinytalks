@@ -40,8 +40,8 @@ different here on purpose:
   delivery for chat messages. An active private conversation uses Metered
   `SignallingClient` for chat notices and a live peer roster; message
   content remains persisted and fetched through the authenticated app API.
-- **Calls use Metered's Video SDK in voice-only mode.** Each call gets a
-  standard expiring private Metered room and a room-scoped access token.
+- **Calls use Metered's Video SDK in voice-only mode.** Each call gets an
+  expiring private audio-only Metered room and a room-scoped access token.
   The app joins with audio tracks only and renders no video or camera
   controls; calls need microphone permission and a secure context (HTTPS,
   or localhost).
@@ -102,7 +102,7 @@ Project → **Settings** → **Environment Variables**:
 | `PUSHER_APP_ID` / `PUSHER_KEY` / `PUSHER_SECRET` / `PUSHER_CLUSTER` | from Pusher |
 | `VITE_PUSHER_KEY` / `VITE_PUSHER_CLUSTER` | same key/cluster, exposed to the client build |
 | `METERED_APP_NAME` | your Metered app slug from the dashboard; replace the `YOUR_APP_NAME` placeholder with the real slug |
-| `METERED_SECRET_KEY` | Metered Video API secret used server-side to create private voice-call rooms and mint room access tokens |
+| `METERED_SECRET_KEY` | Metered Video API secret used server-side to create private audio-only call rooms and mint room access tokens |
 | `METERED_REALTIME_SK_ID` | Metered Realtime signing key ID (the `sk_id_...` value) |
 | `METERED_REALTIME_SK` | Metered Realtime signing secret; server-side only, never expose it as a `VITE_` variable |
 | `CRON_SECRET` | any long random string (Vercel sends it back automatically when calling the cron route) |
@@ -164,7 +164,7 @@ intended safe default, not a bug.
 **Metered calls and realtime chat**: set `METERED_APP_NAME`,
 `METERED_SECRET_KEY`, `METERED_REALTIME_SK_ID`, and
 `METERED_REALTIME_SK` in the server environment (including Vercel Production
-and Preview as needed). `METERED_SECRET_KEY` creates expiring, private voice-call
+and Preview as needed). `METERED_SECRET_KEY` creates expiring, private audio-only
 Metered rooms and mints room-scoped access tokens. The browser receives
 only the access token for its call room. `METERED_REALTIME_SK` signs
 conversation-scoped JWTs with the user's display name and avatar metadata;
